@@ -103,11 +103,11 @@ func parseCoverProfile(path string, moduleDir string) (*CoverageMap, error) {
 
 // parseLineFromPos extracts the line number from "line.col" format.
 func parseLineFromPos(s string) int {
-	dotIdx := strings.Index(s, ".")
-	if dotIdx < 0 {
+	before, _, ok := strings.Cut(s, ".")
+	if !ok {
 		return 0
 	}
-	n, err := strconv.Atoi(s[:dotIdx])
+	n, err := strconv.Atoi(before)
 	if err != nil {
 		return 0
 	}
@@ -146,8 +146,8 @@ func readModulePath(dir string) string {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "module "))
+		if after, ok := strings.CutPrefix(line, "module "); ok {
+			return strings.TrimSpace(after)
 		}
 	}
 	return ""
