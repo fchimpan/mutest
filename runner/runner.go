@@ -32,10 +32,8 @@ type Summary struct {
 
 // Config controls runner behavior.
 type Config struct {
-	Workers  int
-	Timeout  time.Duration
-	BaseDir  string
-	TestArgs []string
+	Workers int
+	Timeout time.Duration
 }
 
 // ProgressFunc is called after each mutant is tested. It may be nil.
@@ -101,12 +99,8 @@ func testMutant(ctx context.Context, eng *engine.Engine, mut mutator.Mutator, pt
 	testCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	args := []string{"test", "-overlay=" + m.OverlayPath}
-	args = append(args, cfg.TestArgs...)
-	args = append(args, "./...")
-
-	cmd := exec.CommandContext(testCtx, "go", args...)
-	cmd.Dir = cfg.BaseDir
+	cmd := exec.CommandContext(testCtx, "go", "test", "-overlay="+m.OverlayPath, "./...")
+	cmd.Dir = eng.BaseDir()
 	output, err := cmd.CombinedOutput()
 
 	timedOut := testCtx.Err() == context.DeadlineExceeded

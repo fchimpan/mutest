@@ -27,17 +27,22 @@ type Mutant struct {
 
 // Engine scans packages, discovers mutations, and prepares overlays.
 type Engine struct {
-	mutators []mutator.Mutator
-	baseDir  string
+	mutators    []mutator.Mutator
+	baseDir     string
+	sourceCache map[string][]byte // file path → source bytes, populated by DiscoverAll
 }
 
 // New creates an Engine rooted at baseDir with the given mutators.
 func New(baseDir string, mutators ...mutator.Mutator) *Engine {
 	return &Engine{
-		mutators: mutators,
-		baseDir:  baseDir,
+		mutators:    mutators,
+		baseDir:     baseDir,
+		sourceCache: make(map[string][]byte),
 	}
 }
+
+// BaseDir returns the root directory of the target Go project.
+func (e *Engine) BaseDir() string { return e.baseDir }
 
 // DiscoverAll parses all non-test .go files under baseDir and returns
 // all mutation points found by the registered mutators.
@@ -67,12 +72,18 @@ func (e *Engine) DiscoverAll() ([]mutator.MutationPoint, error) {
 			return nil
 		}
 
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return nil // skip unreadable files
+		}
+
 		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
 		if err != nil {
 			return nil // skip unparseable files
 		}
 
+		e.sourceCache[path] = src
 		pkg := file.Name.Name
 
 		for _, m := range e.mutators {
@@ -91,8 +102,10 @@ func (e *Engine) DiscoverAll() ([]mutator.MutationPoint, error) {
 // Prepare re-parses the source file for the given mutation point,
 // applies the mutation, writes a temp file, and generates an overlay.json.
 func (e *Engine) Prepare(m mutator.Mutator, point mutator.MutationPoint) (_ *Mutant, retErr error) {
+	// Use cached source bytes when available to avoid repeated disk reads.
+	src := e.sourceCache[point.File]
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, point.File, nil, parser.ParseComments)
+	file, err := parser.ParseFile(fset, point.File, src, parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}

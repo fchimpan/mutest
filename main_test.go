@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -65,11 +66,11 @@ func TestRun_NoMutationPoints(t *testing.T) {
 	testSrc := "package empty\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) { if Add(1,2) != 3 { t.Fail() } }\n"
 
 	for name, content := range map[string]string{
-		"go.mod":       gomod,
-		"empty.go":     goSrc,
+		"go.mod":        gomod,
+		"empty.go":      goSrc,
 		"empty_test.go": testSrc,
 	} {
-		if err := writeFile(tmpDir+"/"+name, content); err != nil {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -210,8 +211,4 @@ func TestPrintReport_AllErrors(t *testing.T) {
 	if !strings.Contains(output, "0.0%") {
 		t.Errorf("expected 0.0%% kill rate, got: %s", output)
 	}
-}
-
-func writeFile(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0644)
 }

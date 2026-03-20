@@ -1,6 +1,7 @@
 package mutator
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"testing"
@@ -25,6 +26,16 @@ func f(a, b int) bool {
 }
 `
 
+func mustParseTestSrc(t *testing.T) (*token.FileSet, *ast.File) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", testSrc, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fset, file
+}
+
 func TestComparisonMutator_Name(t *testing.T) {
 	m := &ComparisonMutator{}
 	if m.Name() != "comparison-boundary" {
@@ -33,17 +44,11 @@ func TestComparisonMutator_Name(t *testing.T) {
 }
 
 func TestComparisonMutator_Discover(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "test.go", testSrc, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fset, file := mustParseTestSrc(t)
 
 	m := &ComparisonMutator{}
 	points := m.Discover(fset, file, "/fake/test.go", "example")
 
-	// Should find 4 comparison operators: >, <, >=, <=
-	// The == on the last line should NOT be found (Tier 1 only).
 	if len(points) != 4 {
 		t.Fatalf("expected 4 mutation points, got %d", len(points))
 	}
@@ -103,30 +108,20 @@ func f(a, b int) bool { return a == b || a != b }
 func TestComparisonMutator_Apply(t *testing.T) {
 	m := &ComparisonMutator{}
 
-	// Discover points on original AST
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "test.go", testSrc, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fset, file := mustParseTestSrc(t)
 	points := m.Discover(fset, file, "/fake/test.go", "example")
 	if len(points) == 0 {
 		t.Fatal("no points found")
 	}
 
 	// Apply first mutation (> to >=) on a fresh AST and verify via re-discover
-	fset2 := token.NewFileSet()
-	file2, err := parser.ParseFile(fset2, "test.go", testSrc, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fset2, file2 := mustParseTestSrc(t)
 	m.Apply(file2, points[0])
 
 	mutatedPoints := m.Discover(fset2, file2, "/fake/test.go", "example")
 	if len(mutatedPoints) != 4 {
 		t.Fatalf("expected 4 points after mutation, got %d", len(mutatedPoints))
 	}
-	// First operator was >, now should be >=
 	if mutatedPoints[0].Original != token.GEQ {
 		t.Errorf("after mutation, expected first operator to be >=, got %s", mutatedPoints[0].Original)
 	}
@@ -135,31 +130,20 @@ func TestComparisonMutator_Apply(t *testing.T) {
 func TestComparisonMutator_Apply_EachPoint(t *testing.T) {
 	m := &ComparisonMutator{}
 
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "test.go", testSrc, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fset, file := mustParseTestSrc(t)
 	points := m.Discover(fset, file, "/fake/test.go", "example")
 
-	// Apply each mutation independently and verify only that point changes
 	for idx, pt := range points {
-		fsetN := token.NewFileSet()
-		fileN, err := parser.ParseFile(fsetN, "test.go", testSrc, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+		fsetN, fileN := mustParseTestSrc(t)
 		m.Apply(fileN, pt)
 
 		mutatedPoints := m.Discover(fsetN, fileN, "/fake/test.go", "example")
 		if len(mutatedPoints) != 4 {
 			t.Fatalf("point[%d]: expected 4 points, got %d", idx, len(mutatedPoints))
 		}
-		// The mutated point should now have the opposite operator
 		if mutatedPoints[idx].Original != pt.Mutated {
 			t.Errorf("point[%d]: expected mutated operator %s, got %s", idx, pt.Mutated, mutatedPoints[idx].Original)
 		}
-		// Other points should remain unchanged
 		for j, other := range mutatedPoints {
 			if j == idx {
 				continue
@@ -175,32 +159,19 @@ func TestComparisonMutator_Apply_EachPoint(t *testing.T) {
 func TestComparisonMutator_NodeID_Deterministic(t *testing.T) {
 	m := &ComparisonMutator{}
 
-	// Parse twice and verify same NodeIDs
-	for run := 0; run < 2; run++ {
-		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, "test.go", testSrc, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		points := m.Discover(fset, file, "/fake/test.go", "example")
-		if run == 0 {
-			continue
-		}
+	// Parse twice independently and verify NodeIDs match
+	fset1, file1 := mustParseTestSrc(t)
+	points1 := m.Discover(fset1, file1, "/fake/test.go", "example")
 
-		fset2 := token.NewFileSet()
-		file2, err := parser.ParseFile(fset2, "test.go", testSrc, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		points2 := m.Discover(fset2, file2, "/fake/test.go", "example")
+	fset2, file2 := mustParseTestSrc(t)
+	points2 := m.Discover(fset2, file2, "/fake/test.go", "example")
 
-		if len(points) != len(points2) {
-			t.Fatalf("different number of points between runs: %d vs %d", len(points), len(points2))
-		}
-		for i := range points {
-			if points[i].NodeID != points2[i].NodeID {
-				t.Errorf("point[%d]: NodeID %d vs %d between runs", i, points[i].NodeID, points2[i].NodeID)
-			}
+	if len(points1) != len(points2) {
+		t.Fatalf("different number of points between runs: %d vs %d", len(points1), len(points2))
+	}
+	for i := range points1 {
+		if points1[i].NodeID != points2[i].NodeID {
+			t.Errorf("point[%d]: NodeID %d vs %d between runs", i, points1[i].NodeID, points2[i].NodeID)
 		}
 	}
 }

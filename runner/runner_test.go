@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"go/token"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -11,12 +12,17 @@ import (
 	"github.com/fchimpan/mutest/mutator"
 )
 
-func TestRun_Integration(t *testing.T) {
-	testDir, err := filepath.Abs(filepath.Join("..", "testdata", "project"))
+func testProjectDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.Abs(filepath.Join("..", "testdata", "project"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return dir
+}
 
+func TestRun_Integration(t *testing.T) {
+	testDir := testProjectDir(t)
 	compMut := &mutator.ComparisonMutator{}
 	eng := engine.New(testDir, compMut)
 
@@ -31,7 +37,6 @@ func TestRun_Integration(t *testing.T) {
 	cfg := Config{
 		Workers: 2,
 		Timeout: 30 * time.Second,
-		BaseDir: testDir,
 	}
 
 	summary := Run(context.Background(), eng, compMut, points, cfg, nil)
@@ -43,11 +48,9 @@ func TestRun_Integration(t *testing.T) {
 		t.Errorf("killed(%d)+survived(%d)+errors(%d) != total(%d)",
 			summary.Killed, summary.Survived, summary.Errors, summary.Total)
 	}
-	// IsPositive's > 0 -> >= 0 should be killed by TestIsPositive(0)
 	if summary.Killed == 0 {
 		t.Error("expected at least 1 killed mutant")
 	}
-	// Clamp boundaries are not fully tested, so some should survive
 	if summary.Survived == 0 {
 		t.Error("expected at least 1 survived mutant")
 	}
@@ -60,11 +63,7 @@ func TestRun_Integration(t *testing.T) {
 }
 
 func TestRun_ProgressCallback(t *testing.T) {
-	testDir, err := filepath.Abs(filepath.Join("..", "testdata", "project"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	testDir := testProjectDir(t)
 	compMut := &mutator.ComparisonMutator{}
 	eng := engine.New(testDir, compMut)
 
@@ -76,7 +75,6 @@ func TestRun_ProgressCallback(t *testing.T) {
 	cfg := Config{
 		Workers: 1,
 		Timeout: 30 * time.Second,
-		BaseDir: testDir,
 	}
 
 	var callCount atomic.Int32
@@ -99,7 +97,7 @@ func TestRun_ProgressCallback(t *testing.T) {
 
 func TestRun_EmptyPoints(t *testing.T) {
 	eng := engine.New(".", &mutator.ComparisonMutator{})
-	cfg := Config{Workers: 1, Timeout: 10 * time.Second, BaseDir: "."}
+	cfg := Config{Workers: 1, Timeout: 10 * time.Second}
 
 	summary := Run(context.Background(), eng, &mutator.ComparisonMutator{}, nil, cfg, nil)
 
@@ -112,15 +110,10 @@ func TestRun_EmptyPoints(t *testing.T) {
 }
 
 func TestRun_PrepareError(t *testing.T) {
-	testDir, err := filepath.Abs(filepath.Join("..", "testdata", "project"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	testDir := testProjectDir(t)
 	compMut := &mutator.ComparisonMutator{}
 	eng := engine.New(testDir, compMut)
 
-	// Create a point with a nonexistent file to trigger Prepare error
 	bogusPoints := []mutator.MutationPoint{
 		{
 			File:     "/nonexistent/file.go",
@@ -128,8 +121,8 @@ func TestRun_PrepareError(t *testing.T) {
 			Line:     1,
 			Column:   1,
 			NodeID:   0,
-			Original: 15, // token.GTR
-			Mutated:  16, // token.GEQ
+			Original: token.GTR,
+			Mutated:  token.GEQ,
 			Desc:     "> to >=",
 		},
 	}
@@ -137,7 +130,6 @@ func TestRun_PrepareError(t *testing.T) {
 	cfg := Config{
 		Workers: 1,
 		Timeout: 10 * time.Second,
-		BaseDir: testDir,
 	}
 
 	summary := Run(context.Background(), eng, compMut, bogusPoints, cfg, nil)
@@ -154,11 +146,7 @@ func TestRun_PrepareError(t *testing.T) {
 }
 
 func TestRun_ContextCancellation(t *testing.T) {
-	testDir, err := filepath.Abs(filepath.Join("..", "testdata", "project"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	testDir := testProjectDir(t)
 	compMut := &mutator.ComparisonMutator{}
 	eng := engine.New(testDir, compMut)
 
@@ -168,17 +156,15 @@ func TestRun_ContextCancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
 	cfg := Config{
 		Workers: 1,
 		Timeout: 30 * time.Second,
-		BaseDir: testDir,
 	}
 
 	summary := Run(ctx, eng, compMut, points, cfg, nil)
 
-	// All should be killed (context cancelled → tests fail)
 	if summary.Total != len(points) {
 		t.Errorf("expected Total=%d, got %d", len(points), summary.Total)
 	}

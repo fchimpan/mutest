@@ -77,10 +77,13 @@ func run(cfg config, stdout, stderr io.Writer) int {
 	runCfg := runner.Config{
 		Workers: cfg.Workers,
 		Timeout: cfg.Timeout,
-		BaseDir: cfg.Dir,
 	}
 
-	absDir, _ := filepath.Abs(cfg.Dir)
+	absDir, err := filepath.Abs(cfg.Dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "mutest: cannot resolve directory: %v\n", err)
+		return 2
+	}
 
 	var progress runner.ProgressFunc
 	if cfg.Verbose {
