@@ -9,7 +9,7 @@
 mutest targets only boundary-value comparison operators (`>`, `>=`, `<`, `<=`) — the #1 source of off-by-one errors. It runs in seconds, not minutes. Zero dependencies. Pure Go standard library.
 
 ```
-$ mutest -v
+$ mutest -v ./...
 [KILLED  ] calc.go:13:11  > to >=   (632ms)
 [SURVIVED] calc.go:5:7    > to >=   (207ms)   ← test gap found!
 
@@ -57,14 +57,17 @@ Pre-built binaries for Linux, macOS, and Windows are available on the [Releases]
 ## Quick Start
 
 ```bash
-# Run against current directory
-mutest
+# Run against all packages (like go test ./...)
+mutest ./...
 
-# Verbose output for a specific project
-mutest -dir ./myapp -v
+# Target a specific package with verbose output
+mutest -v ./pkg/calc
+
+# Only run tests matching a regex (like go test -run)
+mutest -v -run TestBoundary ./...
 
 # Tune parallelism and timeout
-mutest -dir ./myapp -workers 4 -timeout 60s
+mutest -workers 4 -timeout 60s ./...
 ```
 
 ---
@@ -72,7 +75,7 @@ mutest -dir ./myapp -workers 4 -timeout 60s
 ## Example Output
 
 ```
-$ mutest -dir ./myapp -v
+$ mutest -v ./...
 mutest: discovered 4 mutation points
 mutest: testing with 10 workers, 30s timeout per mutant
 
@@ -152,8 +155,8 @@ Re-run mutest and that mutation point will now show `[KILLED]`.
 ```
 $ mutest -help
 Usage of mutest:
-  -dir string
-        root directory of the Go project to mutate (default ".")
+  -run string
+        regexp to pass to go test -run
   -timeout duration
         per-mutant test timeout (default 30s)
   -v    print details for each mutant
@@ -161,6 +164,9 @@ Usage of mutest:
         print version and exit
   -workers int
         max parallel test processes (default NumCPU)
+
+# Positional arguments are package patterns (default: ./...)
+mutest [flags] [packages]
 ```
 
 ---
@@ -190,7 +196,7 @@ Go's [`-overlay` flag](https://pkg.go.dev/cmd/go#hdr-Compile_packages_and_depend
 - name: Run mutation tests
   run: |
     go install github.com/fchimpan/mutest@latest
-    mutest -v
+    mutest -v ./...
 ```
 
 Surviving mutants cause exit code `1`, failing the CI step automatically.
@@ -244,8 +250,8 @@ Contributions are welcome! Please open an issue first to discuss what you'd like
 ```bash
 git clone https://github.com/fchimpan/mutest.git
 cd mutest
-go test ./...        # run tests
-go run . -dir testdata/project -v  # try it out
+go test ./...                         # run tests
+cd testdata/project && go run ../.. -v ./...  # try it out
 ```
 
 ## License

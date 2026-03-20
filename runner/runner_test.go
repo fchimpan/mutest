@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"go/token"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -21,10 +22,22 @@ func testProjectDir(t *testing.T) string {
 	return dir
 }
 
+func chdir(t *testing.T, dir string) {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(orig) })
+}
+
 func TestRun_Integration(t *testing.T) {
-	testDir := testProjectDir(t)
+	chdir(t, testProjectDir(t))
 	compMut := &mutator.ComparisonMutator{}
-	eng := engine.New(testDir, compMut)
+	eng := engine.New([]string{"./..."}, compMut)
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
@@ -35,8 +48,9 @@ func TestRun_Integration(t *testing.T) {
 	}
 
 	cfg := Config{
-		Workers: 2,
-		Timeout: 30 * time.Second,
+		Workers:  2,
+		Timeout:  30 * time.Second,
+		Patterns: []string{"./..."},
 	}
 
 	summary := Run(context.Background(), eng, compMut, points, cfg, nil)
@@ -63,9 +77,9 @@ func TestRun_Integration(t *testing.T) {
 }
 
 func TestRun_ProgressCallback(t *testing.T) {
-	testDir := testProjectDir(t)
+	chdir(t, testProjectDir(t))
 	compMut := &mutator.ComparisonMutator{}
-	eng := engine.New(testDir, compMut)
+	eng := engine.New([]string{"./..."}, compMut)
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
@@ -73,8 +87,9 @@ func TestRun_ProgressCallback(t *testing.T) {
 	}
 
 	cfg := Config{
-		Workers: 1,
-		Timeout: 30 * time.Second,
+		Workers:  1,
+		Timeout:  30 * time.Second,
+		Patterns: []string{"./..."},
 	}
 
 	var callCount atomic.Int32
@@ -96,8 +111,8 @@ func TestRun_ProgressCallback(t *testing.T) {
 }
 
 func TestRun_EmptyPoints(t *testing.T) {
-	eng := engine.New(".", &mutator.ComparisonMutator{})
-	cfg := Config{Workers: 1, Timeout: 10 * time.Second}
+	eng := engine.New([]string{"./..."}, &mutator.ComparisonMutator{})
+	cfg := Config{Workers: 1, Timeout: 10 * time.Second, Patterns: []string{"./..."}}
 
 	summary := Run(context.Background(), eng, &mutator.ComparisonMutator{}, nil, cfg, nil)
 
@@ -110,9 +125,9 @@ func TestRun_EmptyPoints(t *testing.T) {
 }
 
 func TestRun_PrepareError(t *testing.T) {
-	testDir := testProjectDir(t)
+	chdir(t, testProjectDir(t))
 	compMut := &mutator.ComparisonMutator{}
-	eng := engine.New(testDir, compMut)
+	eng := engine.New([]string{"./..."}, compMut)
 
 	bogusPoints := []mutator.MutationPoint{
 		{
@@ -128,8 +143,9 @@ func TestRun_PrepareError(t *testing.T) {
 	}
 
 	cfg := Config{
-		Workers: 1,
-		Timeout: 10 * time.Second,
+		Workers:  1,
+		Timeout:  10 * time.Second,
+		Patterns: []string{"./..."},
 	}
 
 	summary := Run(context.Background(), eng, compMut, bogusPoints, cfg, nil)
@@ -146,9 +162,9 @@ func TestRun_PrepareError(t *testing.T) {
 }
 
 func TestRun_ContextCancellation(t *testing.T) {
-	testDir := testProjectDir(t)
+	chdir(t, testProjectDir(t))
 	compMut := &mutator.ComparisonMutator{}
-	eng := engine.New(testDir, compMut)
+	eng := engine.New([]string{"./..."}, compMut)
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
@@ -159,8 +175,9 @@ func TestRun_ContextCancellation(t *testing.T) {
 	cancel()
 
 	cfg := Config{
-		Workers: 1,
-		Timeout: 30 * time.Second,
+		Workers:  1,
+		Timeout:  30 * time.Second,
+		Patterns: []string{"./..."},
 	}
 
 	summary := Run(ctx, eng, compMut, points, cfg, nil)

@@ -7,8 +7,8 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/fchimpan/mutest/mutator"
 )
@@ -25,62 +25,48 @@ type Mutant struct {
 	TempDir     string // directory containing overlay.json and mutated file
 }
 
+// goPackage represents a subset of `go list -json` output.
+type goPackage struct {
+	Dir     string   `json:"Dir"`
+	GoFiles []string `json:"GoFiles"`
+}
+
 // Engine scans packages, discovers mutations, and prepares overlays.
 type Engine struct {
 	mutators    []mutator.Mutator
-	baseDir     string
-	sourceCache map[string][]byte // file path → source bytes, populated by DiscoverAll
+	patterns    []string           // package patterns (e.g. "./...", "./pkg/calc")
+	sourceCache map[string][]byte  // file path → source bytes
 }
 
-// New creates an Engine rooted at baseDir with the given mutators.
-func New(baseDir string, mutators ...mutator.Mutator) *Engine {
+// New creates an Engine for the given package patterns with the given mutators.
+// patterns are Go package patterns like "./...", "./pkg/...".
+func New(patterns []string, mutators ...mutator.Mutator) *Engine {
 	return &Engine{
 		mutators:    mutators,
-		baseDir:     baseDir,
+		patterns:    patterns,
 		sourceCache: make(map[string][]byte),
 	}
 }
 
-// BaseDir returns the root directory of the target Go project.
-func (e *Engine) BaseDir() string { return e.baseDir }
-
-// DiscoverAll parses all non-test .go files under baseDir and returns
-// all mutation points found by the registered mutators.
+// DiscoverAll resolves the package patterns via `go list`, parses all
+// non-test .go files, and returns all mutation points found.
 func (e *Engine) DiscoverAll() ([]mutator.MutationPoint, error) {
-	absBase, err := filepath.Abs(e.baseDir)
+	files, err := e.resolveFiles()
 	if err != nil {
 		return nil, err
 	}
 
 	var points []mutator.MutationPoint
-
-	err = filepath.WalkDir(absBase, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		name := d.Name()
-
-		if d.IsDir() {
-			if name == "vendor" || name == "testdata" || name == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			return nil
-		}
-
+	for _, path := range files {
 		src, err := os.ReadFile(path)
 		if err != nil {
-			return nil // skip unreadable files
+			continue // skip unreadable files
 		}
 
 		fset := token.NewFileSet()
 		file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
 		if err != nil {
-			return nil // skip unparseable files
+			continue // skip unparseable files
 		}
 
 		e.sourceCache[path] = src
@@ -90,13 +76,33 @@ func (e *Engine) DiscoverAll() ([]mutator.MutationPoint, error) {
 			pts := m.Discover(fset, file, path, pkg)
 			points = append(points, pts...)
 		}
-		return nil
-	})
+	}
+
+	return points, nil
+}
+
+// resolveFiles uses `go list -json` to resolve package patterns to
+// absolute file paths of non-test .go files.
+func (e *Engine) resolveFiles() ([]string, error) {
+	args := append([]string{"list", "-json"}, e.patterns...)
+	cmd := exec.Command("go", args...)
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
 
-	return points, nil
+	var files []string
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var pkg goPackage
+		if err := dec.Decode(&pkg); err != nil {
+			return nil, err
+		}
+		for _, f := range pkg.GoFiles {
+			files = append(files, filepath.Join(pkg.Dir, f))
+		}
+	}
+	return files, nil
 }
 
 // Prepare re-parses the source file for the given mutation point,
