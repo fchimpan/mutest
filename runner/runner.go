@@ -101,7 +101,7 @@ func testMutant(ctx context.Context, eng *engine.Engine, pt mutator.MutationPoin
 	testCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	args := []string{"test", "-overlay=" + m.OverlayPath}
+	args := []string{"test", "-failfast", "-overlay=" + m.OverlayPath}
 	if cfg.Run != "" {
 		args = append(args, "-run", cfg.Run)
 	}
