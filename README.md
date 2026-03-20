@@ -6,7 +6,7 @@
 
 **Mutation testing for Go that finishes before your coffee cools.**
 
-mutest targets only boundary-value comparison operators (`>`, `>=`, `<`, `<=`) — the #1 source of off-by-one errors. It runs in seconds, not minutes. Zero dependencies. Pure Go standard library.
+mutest targets boundary-value comparison operators (`>`, `>=`, `<`, `<=`) and equality operators (`==`, `!=`) — the #1 source of off-by-one and equality errors. It runs in seconds, not minutes. Zero dependencies. Pure Go standard library.
 
 ```
 $ mutest -v ./...
@@ -26,7 +26,7 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 
 | | Traditional tools | mutest |
 |---|---|---|
-| **Scope** | All operators | Comparison boundaries only |
+| **Scope** | All operators | Comparison boundaries + equality |
 | **Runtime** | Minutes to hours | **Seconds** |
 | **Signal-to-noise** | Low (many trivial survivors) | **High** (survivors = real test gaps) |
 | **CI-friendly** | Rarely | **By design** |
@@ -35,9 +35,13 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 
 ## Features
 
-- **Boundary-value mutations** — `>` ↔ `>=`, `<` ↔ `<=`
+- **Boundary-value mutations** — `>` ↔ `>=`, `<` ↔ `<=` (Tier 1)
+- **Equality mutations** — `==` ↔ `!=` (Tier 2)
 - **Non-destructive** — Uses Go's `-overlay` flag; source files are never touched
 - **Parallel execution** — Worker pool bounded by CPU cores
+- **Progress spinner** — Real-time progress indicator on stderr
+- **Skip directive** — `//mutest:skip` to exclude functions or lines from mutation
+- **Threshold gate** — `-threshold` flag for CI quality gates
 - **JSON output** — Machine-readable output for CI pipelines and AI agents (`-json`)
 - **Dry-run mode** — Preview mutations without running tests (`-dry-run`)
 - **Extensible** — `Mutator` interface for adding new mutation tiers
@@ -70,6 +74,9 @@ mutest -v -run TestBoundary ./...
 
 # Tune parallelism and timeout
 mutest -workers 4 -timeout 60s ./...
+
+# CI quality gate: fail if kill rate is below 80%
+mutest -threshold 80 ./...
 
 # Preview mutations without running tests
 mutest -dry-run ./...
@@ -152,8 +159,8 @@ Re-run mutest and that mutation point will now show `[KILLED]`.
 
 | Code | Meaning |
 |------|---------|
-| `0` | All mutants killed — boundary coverage is solid |
-| `1` | Surviving mutants detected — test gaps found |
+| `0` | All mutants killed (or kill rate meets `-threshold`) |
+| `1` | Surviving mutants detected (or kill rate below `-threshold`) |
 | `2` | Fatal error (e.g., project parse failure) |
 
 ---
@@ -174,6 +181,7 @@ Positional arguments are package patterns (default: `./...`), following the same
 | `-run` | | Regexp to pass to `go test -run` |
 | `-workers` | `NumCPU` | Max parallel test processes |
 | `-timeout` | `30s` | Per-mutant test timeout |
+| `-threshold` | `0` | Minimum kill rate % (0-100); exit 1 if below. 0 = any survived fails |
 | `-version` | | Print version and exit |
 
 ### JSON Output
@@ -198,6 +206,33 @@ $ mutest -json -v ./...
 ```
 
 When `-json` is active, informational messages are sent to stderr to keep stdout machine-parseable.
+
+### Skip Directive
+
+Use `//mutest:skip` comments to exclude specific functions or lines from mutation testing.
+
+**Function-level skip** — add `//mutest:skip` as a doc comment to skip the entire function:
+
+```go
+//mutest:skip
+func legacyCompare(a, b int) bool {
+    return a > b // this mutation will be skipped
+}
+```
+
+**Line-level skip** — add `//mutest:skip` as an inline comment to skip that line only:
+
+```go
+func compare(a, b int) int {
+    if a > b { //mutest:skip
+        return 1
+    }
+    if a < b { // this mutation will NOT be skipped
+        return -1
+    }
+    return 0
+}
+```
 
 ### Dry-Run Mode
 
@@ -228,7 +263,7 @@ $ mutest -dry-run -json ./...
 ## How It Works
 
 1. **Parse** — `go/parser` builds an AST from every non-test `.go` file
-2. **Discover** — Walk the AST to find `ast.BinaryExpr` with `>`, `>=`, `<`, `<=`
+2. **Discover** — Walk the AST to find `ast.BinaryExpr` with `>`, `>=`, `<`, `<=`, `==`, `!=` (respecting `//mutest:skip`)
 3. **Mutate** — For each point, re-parse the file and swap the operator
 4. **Overlay** — Write the mutated source to a temp file; generate `overlay.json` mapping `original.go → mutated.go`
 5. **Test** — Run `go test -overlay=overlay.json ./...` in a parallel worker pool
@@ -255,6 +290,15 @@ Go's [`-overlay` flag](https://pkg.go.dev/cmd/go#hdr-Compile_packages_and_depend
 
 Surviving mutants cause exit code `1`, failing the CI step automatically.
 
+Use `-threshold` to set a minimum kill rate instead of requiring 100%:
+
+```yaml
+- name: Run mutation tests (quality gate)
+  run: |
+    go install github.com/fchimpan/mutest@latest
+    mutest -threshold 80 ./...  # fail if kill rate < 80%
+```
+
 Use `-json` for structured output that integrates with other tools:
 
 ```yaml
@@ -272,11 +316,13 @@ Use `-json` for structured output that integrates with other tools:
 ```
 mutest/
 ├── main.go              # CLI entry point, flags, reporting
+├── spinner.go           # Progress spinner for terminal output
 ├── mutator/
 │   ├── mutator.go       # Mutator interface & MutationPoint type
-│   └── comparison.go    # Tier 1: boundary comparison mutations
+│   ├── comparison.go    # Tier 1: boundary comparison mutations (> >= < <=)
+│   └── equality.go      # Tier 2: equality mutations (== !=)
 ├── engine/
-│   └── engine.go        # AST traversal, overlay generation, temp files
+│   └── engine.go        # AST traversal, overlay generation, //mutest:skip
 └── runner/
     └── runner.go        # Parallel test execution & result aggregation
 ```
@@ -301,10 +347,14 @@ Register it in `main.go`. No changes to engine or runner.
 
 - [x] JSON output (`-json`, NDJSON streaming with `-json -v`)
 - [x] Dry-run mode (`-dry-run`)
-- [ ] **Tier 2**: `==` ↔ `!=` mutations
+- [x] **Tier 2**: `==` ↔ `!=` mutations
+- [x] `//mutest:skip` directive (function-level and line-level)
+- [x] `-threshold` flag for CI quality gates
+- [x] Progress spinner
 - [ ] **Tier 3**: `&&` ↔ `||` mutations
 - [ ] Coverage-based skip (don't test mutations on uncovered lines)
 - [ ] JUnit report output
+- [ ] HTML report output
 
 ---
 

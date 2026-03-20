@@ -121,7 +121,7 @@ func TestPrepareAndCleanup(t *testing.T) {
 		t.Fatal("no mutation points found")
 	}
 
-	m, err := eng.Prepare(compMut, points[0])
+	m, err := eng.Prepare(points[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,13 +189,126 @@ func TestPrepare_InvalidFile(t *testing.T) {
 	eng := New([]string{"./..."}, compMut)
 
 	bogusPoint := mutator.MutationPoint{
-		File:   "/nonexistent/file.go",
-		NodeID: 0,
+		File:        "/nonexistent/file.go",
+		NodeID:      0,
+		MutatorName: "comparison-boundary",
 	}
 
-	_, err := eng.Prepare(compMut, bogusPoint)
+	_, err := eng.Prepare(bogusPoint)
 	if err == nil {
 		t.Error("expected error for nonexistent source file")
+	}
+}
+
+func TestPrepare_UnknownMutator(t *testing.T) {
+	compMut := &mutator.ComparisonMutator{}
+	eng := New([]string{"./..."}, compMut)
+
+	bogusPoint := mutator.MutationPoint{
+		File:        "/nonexistent/file.go",
+		NodeID:      0,
+		MutatorName: "nonexistent-mutator",
+	}
+
+	_, err := eng.Prepare(bogusPoint)
+	if err == nil {
+		t.Error("expected error for unknown mutator name")
+	}
+}
+
+func TestDiscoverAll_SkipDirective_Function(t *testing.T) {
+	tmpDir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod": "module example.com/skip\n\ngo 1.21\n",
+		"skip.go": `package skip
+
+//mutest:skip
+func Skipped(a, b int) bool {
+	return a > b
+}
+
+func NotSkipped(a, b int) bool {
+	return a < b
+}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, tmpDir)
+
+	eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
+	points, err := eng.DiscoverAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 1 {
+		t.Errorf("expected 1 point (skipped function excluded), got %d", len(points))
+	}
+	if len(points) > 0 && points[0].Desc != "< to <=" {
+		t.Errorf("expected remaining point to be '<', got %q", points[0].Desc)
+	}
+}
+
+func TestDiscoverAll_SkipDirective_Line(t *testing.T) {
+	tmpDir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod": "module example.com/skip\n\ngo 1.21\n",
+		"skip.go": `package skip
+
+func Mixed(a, b int) bool {
+	if a > b { //mutest:skip
+		return true
+	}
+	return a < b
+}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, tmpDir)
+
+	eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
+	points, err := eng.DiscoverAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 1 {
+		t.Errorf("expected 1 point (skipped line excluded), got %d", len(points))
+	}
+	if len(points) > 0 && points[0].Desc != "< to <=" {
+		t.Errorf("expected remaining point to be '<', got %q", points[0].Desc)
+	}
+}
+
+func TestDiscoverAll_SkipDirective_SpaceVariant(t *testing.T) {
+	tmpDir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod": "module example.com/skip\n\ngo 1.21\n",
+		"skip.go": `package skip
+
+// mutest:skip
+func Skipped(a, b int) bool {
+	return a > b
+}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, tmpDir)
+
+	eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
+	points, err := eng.DiscoverAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 0 {
+		t.Errorf("expected 0 points (function with space variant skipped), got %d", len(points))
 	}
 }
 
@@ -210,7 +323,7 @@ func TestPrepare_AllPoints(t *testing.T) {
 	}
 
 	for i, pt := range points {
-		m, err := eng.Prepare(compMut, pt)
+		m, err := eng.Prepare(pt)
 		if err != nil {
 			t.Errorf("point[%d]: Prepare failed: %v", i, err)
 			continue

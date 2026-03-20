@@ -3,12 +3,15 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"go/ast"
 	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/fchimpan/mutest/mutator"
 )
@@ -75,13 +78,17 @@ func (e *Engine) DiscoverAll() ([]mutator.MutationPoint, error) {
 		e.sourceCache[path] = src
 		pkg := file.Name.Name
 		importPath := e.importPaths[path]
+		si := buildSkipInfo(fset, file)
 
 		for _, m := range e.mutators {
 			pts := m.Discover(fset, file, path, pkg)
 			for i := range pts {
 				pts[i].ImportPath = importPath
+				pts[i].MutatorName = m.Name()
+				if !si.shouldSkip(pts[i].Line) {
+					points = append(points, pts[i])
+				}
 			}
-			points = append(points, pts...)
 		}
 	}
 
@@ -116,7 +123,19 @@ func (e *Engine) resolveFiles() ([]string, error) {
 
 // Prepare re-parses the source file for the given mutation point,
 // applies the mutation, writes a temp file, and generates an overlay.json.
-func (e *Engine) Prepare(m mutator.Mutator, point mutator.MutationPoint) (_ *Mutant, retErr error) {
+// The mutator is looked up by point.MutatorName from the engine's registered mutators.
+func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) {
+	var m mutator.Mutator
+	for _, mut := range e.mutators {
+		if mut.Name() == point.MutatorName {
+			m = mut
+			break
+		}
+	}
+	if m == nil {
+		return nil, fmt.Errorf("unknown mutator: %q", point.MutatorName)
+	}
+
 	// Use cached source bytes when available to avoid repeated disk reads.
 	src := e.sourceCache[point.File]
 	fset := token.NewFileSet()
@@ -172,4 +191,63 @@ func (e *Engine) Prepare(m mutator.Mutator, point mutator.MutationPoint) (_ *Mut
 // Cleanup removes the temp directory for a mutant.
 func (e *Engine) Cleanup(m *Mutant) {
 	os.RemoveAll(m.TempDir)
+}
+
+// --- //mutest:skip directive support ---
+
+type skipInfo struct {
+	lines  map[int]bool // specific lines to skip
+	ranges []lineRange  // function ranges to skip
+}
+
+type lineRange struct {
+	start, end int
+}
+
+// buildSkipInfo scans the AST's comments for //mutest:skip directives.
+// A directive on a function's doc comment skips the entire function body.
+// A directive on any other line skips mutations on that specific line.
+func buildSkipInfo(fset *token.FileSet, file *ast.File) *skipInfo {
+	si := &skipInfo{
+		lines: make(map[int]bool),
+	}
+
+	// Function-level: check doc comments for mutest:skip
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Doc == nil {
+			continue
+		}
+		for _, c := range fn.Doc.List {
+			if strings.Contains(c.Text, "mutest:skip") {
+				start := fset.Position(fn.Pos()).Line
+				end := fset.Position(fn.End()).Line
+				si.ranges = append(si.ranges, lineRange{start, end})
+				break
+			}
+		}
+	}
+
+	// Line-level: all comments with mutest:skip
+	for _, cg := range file.Comments {
+		for _, c := range cg.List {
+			if strings.Contains(c.Text, "mutest:skip") {
+				si.lines[fset.Position(c.Pos()).Line] = true
+			}
+		}
+	}
+
+	return si
+}
+
+func (si *skipInfo) shouldSkip(line int) bool {
+	if si.lines[line] {
+		return true
+	}
+	for _, r := range si.ranges {
+		if line >= r.start && line <= r.end {
+			return true
+		}
+	}
+	return false
 }
