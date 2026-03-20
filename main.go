@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,6 +30,8 @@ type config struct {
 	Timeout  time.Duration
 	Verbose  bool
 	Run      string
+	JSON     bool
+	DryRun   bool
 }
 
 func main() {
@@ -36,6 +40,8 @@ func main() {
 	timeout := flag.Duration("timeout", 30*time.Second, "per-mutant test timeout")
 	verbose := flag.Bool("v", false, "print details for each mutant")
 	run := flag.String("run", "", "regexp to pass to go test -run")
+	jsonOutput := flag.Bool("json", false, "emit results as JSON")
+	dryRun := flag.Bool("dry-run", false, "discover mutations without running tests")
 	flag.Parse()
 
 	if *showVersion {
@@ -54,6 +60,8 @@ func main() {
 		Timeout:  *timeout,
 		Verbose:  *verbose,
 		Run:      *run,
+		JSON:     *jsonOutput,
+		DryRun:   *dryRun,
 	}
 
 	code := run2(cfg, os.Stdout, os.Stderr)
@@ -62,8 +70,23 @@ func main() {
 	}
 }
 
+func validateConfig(cfg config) error {
+	if cfg.Workers <= 0 {
+		return fmt.Errorf("-workers must be > 0, got %d", cfg.Workers)
+	}
+	if cfg.Timeout <= 0 {
+		return fmt.Errorf("-timeout must be > 0, got %s", cfg.Timeout)
+	}
+	return nil
+}
+
 // run2 executes the mutation testing pipeline, returning an exit code.
 func run2(cfg config, stdout, stderr io.Writer) int {
+	if err := validateConfig(cfg); err != nil {
+		fmt.Fprintf(stderr, "mutest: %v\n", err)
+		return 2
+	}
+
 	compMut := &mutator.ComparisonMutator{}
 	eng := engine.New(cfg.Patterns, compMut)
 
@@ -73,13 +96,34 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	cwd, _ := os.Getwd()
+	rpc := newRelPathCache(cwd)
+
 	if len(points) == 0 {
-		fmt.Fprintln(stdout, "mutest: no mutation points found")
+		if cfg.JSON {
+			if cfg.DryRun {
+				fmt.Fprintln(stdout, "[]")
+			} else {
+				writeJSONSummary(stdout, &runner.Summary{}, rpc, true)
+			}
+		} else {
+			fmt.Fprintln(stdout, "mutest: no mutation points found")
+		}
 		return 0
 	}
 
-	fmt.Fprintf(stdout, "mutest: discovered %d mutation points\n", len(points))
-	fmt.Fprintf(stdout, "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
+	// dry-run: list discovered mutations and exit
+	if cfg.DryRun {
+		return runDryRun(cfg, stdout, points, rpc)
+	}
+
+	// Informational messages go to stderr in JSON mode to keep stdout machine-readable.
+	info := stdout
+	if cfg.JSON {
+		info = stderr
+	}
+	fmt.Fprintf(info, "mutest: discovered %d mutation points\n", len(points))
+	fmt.Fprintf(info, "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
 
 	runCfg := runner.Config{
 		Workers:  cfg.Workers,
@@ -88,25 +132,37 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		Run:      cfg.Run,
 	}
 
-	cwd, _ := os.Getwd()
-
 	var progress runner.ProgressFunc
 	if cfg.Verbose {
-		progress = func(r runner.Result, done, total int) {
-			status := "SURVIVED"
-			if r.Err != nil {
-				status = "ERROR"
-			} else if r.Killed {
-				status = "KILLED"
+		if cfg.JSON {
+			// NDJSON streaming: one JSON object per line, reuse a single encoder.
+			enc := newJSONEncoder(stdout)
+			progress = func(r runner.Result, done, total int) {
+				enc.Encode(toJSONResult(r, rpc))
 			}
-			fmt.Fprintf(stdout, "[%-8s] %s:%d:%d  %s  (%s)\n",
-				status, relPath(cwd, r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc, r.Duration.Round(time.Millisecond))
+		} else {
+			progress = func(r runner.Result, done, total int) {
+				status := "SURVIVED"
+				if r.Err != nil {
+					status = "ERROR"
+				} else if r.Killed {
+					status = "KILLED"
+				}
+				fmt.Fprintf(stdout, "[%-8s] %s:%d:%d  %s  (%s)\n",
+					status, rpc.get(r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc, r.Duration.Round(time.Millisecond))
+			}
 		}
 	}
 
 	summary := runner.Run(context.Background(), eng, compMut, points, runCfg, progress)
 
-	printReport(stdout, summary, cwd)
+	if cfg.JSON {
+		// When verbose, results were already streamed as NDJSON;
+		// emit summary without duplicating them.
+		writeJSONSummary(stdout, summary, rpc, !cfg.Verbose)
+	} else {
+		printReport(stdout, summary, rpc)
+	}
 
 	if summary.Survived > 0 {
 		return 1
@@ -114,23 +170,64 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func relPath(base, path string) string {
-	rel, err := filepath.Rel(base, path)
-	if err != nil {
-		return path
+func runDryRun(cfg config, stdout io.Writer, points []mutator.MutationPoint, rpc *relPathCache) int {
+	if cfg.JSON {
+		pts := make([]jsonMutationPoint, len(points))
+		for i, p := range points {
+			pts[i] = jsonMutationPoint{
+				File:     rpc.get(p.File),
+				Package:  p.Package,
+				Line:     p.Line,
+				Column:   p.Column,
+				Original: p.Original.String(),
+				Mutated:  p.Mutated.String(),
+				Desc:     p.Desc,
+			}
+		}
+		enc := newJSONEncoder(stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(pts)
+	} else {
+		fmt.Fprintf(stdout, "mutest: discovered %d mutation points (dry run)\n\n", len(points))
+		for i, p := range points {
+			fmt.Fprintf(stdout, "  %d. %s:%d:%d  %s\n", i+1, rpc.get(p.File), p.Line, p.Column, p.Desc)
+		}
 	}
+	return 0
+}
+
+// relPathCache avoids repeated filepath.Rel calls for the same absolute path.
+// Mutation testing typically targets a handful of files with many mutation points each,
+// so caching the relative path per file avoids redundant work.
+type relPathCache struct {
+	base  string
+	cache map[string]string
+}
+
+func newRelPathCache(base string) *relPathCache {
+	return &relPathCache{base: base, cache: make(map[string]string)}
+}
+
+func (c *relPathCache) get(path string) string {
+	if rel, ok := c.cache[path]; ok {
+		return rel
+	}
+	rel, err := filepath.Rel(c.base, path)
+	if err != nil {
+		rel = path
+	}
+	c.cache[path] = rel
 	return rel
 }
 
-func printReport(w io.Writer, s *runner.Summary, cwd string) {
+// --- Text report ---
+
+func printReport(w io.Writer, s *runner.Summary, rpc *relPathCache) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "===== Mutation Testing Summary =====")
 	fmt.Fprintf(w, "Total:     %d\n", s.Total)
 
-	killRate := 0.0
-	if s.Total-s.Errors > 0 {
-		killRate = float64(s.Killed) / float64(s.Total-s.Errors) * 100
-	}
+	killRate := calcKillRate(s)
 
 	fmt.Fprintf(w, "Killed:    %d (%.1f%%)\n", s.Killed, killRate)
 	fmt.Fprintf(w, "Survived:  %d\n", s.Survived)
@@ -150,7 +247,105 @@ func printReport(w io.Writer, s *runner.Summary, cwd string) {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Survived mutants (test gaps):")
 		for i, r := range survived {
-			fmt.Fprintf(w, "  %d. %s:%d:%d  %s\n", i+1, relPath(cwd, r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc)
+			fmt.Fprintf(w, "  %d. %s:%d:%d  %s\n", i+1, rpc.get(r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc)
 		}
 	}
+}
+
+// --- JSON types and helpers ---
+
+type jsonMutationPoint struct {
+	File     string `json:"file"`
+	Package  string `json:"package"`
+	Line     int    `json:"line"`
+	Column   int    `json:"column"`
+	Original string `json:"original"`
+	Mutated  string `json:"mutated"`
+	Desc     string `json:"desc"`
+}
+
+type jsonResult struct {
+	Status   string `json:"status"`
+	File     string `json:"file"`
+	Package  string `json:"package"`
+	Line     int    `json:"line"`
+	Column   int    `json:"column"`
+	Original string `json:"original"`
+	Mutated  string `json:"mutated"`
+	Desc     string `json:"desc"`
+	Duration string `json:"duration"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+type jsonSummary struct {
+	Total    int          `json:"total"`
+	Killed   int          `json:"killed"`
+	Survived int          `json:"survived"`
+	Errors   int          `json:"errors"`
+	KillRate float64      `json:"kill_rate"`
+	Duration string       `json:"duration"`
+	Results  []jsonResult `json:"results"`
+}
+
+func toJSONResult(r runner.Result, rpc *relPathCache) jsonResult {
+	status := "survived"
+	if r.Err != nil {
+		status = "error"
+	} else if r.Killed {
+		status = "killed"
+	}
+	jr := jsonResult{
+		Status:   status,
+		File:     rpc.get(r.Point.File),
+		Package:  r.Point.Package,
+		Line:     r.Point.Line,
+		Column:   r.Point.Column,
+		Original: r.Point.Original.String(),
+		Mutated:  r.Point.Mutated.String(),
+		Desc:     r.Point.Desc,
+		Duration: r.Duration.Round(time.Millisecond).String(),
+		TimedOut: r.TimedOut,
+	}
+	if r.Err != nil {
+		jr.Error = r.Err.Error()
+	}
+	return jr
+}
+
+func writeJSONSummary(w io.Writer, s *runner.Summary, rpc *relPathCache, includeResults bool) {
+	killRate := calcKillRate(s)
+
+	var results []jsonResult
+	if includeResults {
+		results = make([]jsonResult, len(s.Results))
+		for i, r := range s.Results {
+			results[i] = toJSONResult(r, rpc)
+		}
+	}
+
+	summary := jsonSummary{
+		Total:    s.Total,
+		Killed:   s.Killed,
+		Survived: s.Survived,
+		Errors:   s.Errors,
+		KillRate: math.Round(killRate*10) / 10,
+		Duration: s.Duration.Round(time.Millisecond).String(),
+		Results:  results,
+	}
+	enc := newJSONEncoder(w)
+	enc.Encode(summary)
+}
+
+func newJSONEncoder(w io.Writer) *json.Encoder {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc
+}
+
+func calcKillRate(s *runner.Summary) float64 {
+	if s.Total-s.Errors > 0 {
+		return float64(s.Killed) / float64(s.Total-s.Errors) * 100
+	}
+	return 0
 }

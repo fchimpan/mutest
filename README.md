@@ -38,6 +38,8 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 - **Boundary-value mutations** — `>` ↔ `>=`, `<` ↔ `<=`
 - **Non-destructive** — Uses Go's `-overlay` flag; source files are never touched
 - **Parallel execution** — Worker pool bounded by CPU cores
+- **JSON output** — Machine-readable output for CI pipelines and AI agents (`-json`)
+- **Dry-run mode** — Preview mutations without running tests (`-dry-run`)
 - **Extensible** — `Mutator` interface for adding new mutation tiers
 - **Zero dependencies** — Go standard library only
 - **CI-ready** — Exit code `1` on surviving mutants, `0` when all killed
@@ -68,6 +70,12 @@ mutest -v -run TestBoundary ./...
 
 # Tune parallelism and timeout
 mutest -workers 4 -timeout 60s ./...
+
+# Preview mutations without running tests
+mutest -dry-run ./...
+
+# JSON output for CI pipelines
+mutest -json ./...
 ```
 
 ---
@@ -153,20 +161,66 @@ Re-run mutest and that mutation point will now show `[KILLED]`.
 ## CLI Reference
 
 ```
-$ mutest -help
-Usage of mutest:
-  -run string
-        regexp to pass to go test -run
-  -timeout duration
-        per-mutant test timeout (default 30s)
-  -v    print details for each mutant
-  -version
-        print version and exit
-  -workers int
-        max parallel test processes (default NumCPU)
-
-# Positional arguments are package patterns (default: ./...)
 mutest [flags] [packages]
+```
+
+Positional arguments are package patterns (default: `./...`), following the same conventions as `go test`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-v` | `false` | Print details for each mutant |
+| `-json` | `false` | Emit results as JSON (NDJSON when combined with `-v`) |
+| `-dry-run` | `false` | Discover mutations without running tests |
+| `-run` | | Regexp to pass to `go test -run` |
+| `-workers` | `NumCPU` | Max parallel test processes |
+| `-timeout` | `30s` | Per-mutant test timeout |
+| `-version` | | Print version and exit |
+
+### JSON Output
+
+The `-json` flag produces machine-readable output suitable for CI pipelines and AI agents.
+
+**Summary mode** (`-json`): Emits a single JSON object with all results:
+
+```bash
+$ mutest -json ./...
+{"total":4,"killed":1,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":[...]}
+```
+
+**Streaming mode** (`-json -v`): Emits one NDJSON line per mutant as results arrive, followed by a summary line:
+
+```bash
+$ mutest -json -v ./...
+{"status":"killed","file":"calc.go","line":13,"column":11,"original":">","mutated":">=","desc":"> to >=","duration":"632ms"}
+{"status":"survived","file":"calc.go","line":5,"column":7,"original":">","mutated":">=","desc":"> to >=","duration":"207ms"}
+...
+{"total":4,"killed":1,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":null}
+```
+
+When `-json` is active, informational messages are sent to stderr to keep stdout machine-parseable.
+
+### Dry-Run Mode
+
+The `-dry-run` flag lists discovered mutation points without executing tests. Useful for previewing scope or counting mutations.
+
+```bash
+$ mutest -dry-run ./...
+mutest: discovered 4 mutation points (dry run)
+
+  1. calc.go:5:7  > to >=
+  2. calc.go:13:11  > to >=
+  3. calc.go:18:7  < to <=
+  4. calc.go:21:7  > to >=
+```
+
+Combine with `-json` for machine-readable output:
+
+```bash
+$ mutest -dry-run -json ./...
+[
+  {"file":"calc.go","package":"testproject","line":5,"column":7,"original":">","mutated":">=","desc":"> to >="},
+  ...
+]
 ```
 
 ---
@@ -200,6 +254,16 @@ Go's [`-overlay` flag](https://pkg.go.dev/cmd/go#hdr-Compile_packages_and_depend
 ```
 
 Surviving mutants cause exit code `1`, failing the CI step automatically.
+
+Use `-json` for structured output that integrates with other tools:
+
+```yaml
+- name: Run mutation tests (JSON)
+  run: |
+    go install github.com/fchimpan/mutest@latest
+    mutest -json ./... | tee mutation-report.json
+    # Parse with jq, upload as artifact, etc.
+```
 
 ---
 
@@ -235,11 +299,12 @@ Register it in `main.go`. No changes to engine or runner.
 
 ## Roadmap
 
+- [x] JSON output (`-json`, NDJSON streaming with `-json -v`)
+- [x] Dry-run mode (`-dry-run`)
 - [ ] **Tier 2**: `==` ↔ `!=` mutations
 - [ ] **Tier 3**: `&&` ↔ `||` mutations
 - [ ] Coverage-based skip (don't test mutations on uncovered lines)
-- [ ] JSON / JUnit report output
-- [ ] Package-level targeting (`-pkg` flag)
+- [ ] JUnit report output
 
 ---
 
