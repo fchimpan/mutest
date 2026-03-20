@@ -22,15 +22,28 @@ func testProjectDir(t *testing.T) string {
 	return dir
 }
 
+// chdir changes to the given directory for the duration of the test.
+func chdir(t *testing.T, dir string) {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(orig) })
+}
+
 func TestDiscoverAll(t *testing.T) {
-	eng := New(testProjectDir(t), &mutator.ComparisonMutator{})
+	chdir(t, testProjectDir(t))
+	eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// calc.go has: > (Max), > (IsPositive), < (Clamp), > (Clamp) = 4 comparison operators
 	if len(points) != 4 {
 		t.Errorf("expected 4 mutation points, got %d", len(points))
 	}
@@ -55,7 +68,8 @@ func TestDiscoverAll(t *testing.T) {
 }
 
 func TestDiscoverAll_NoMutators(t *testing.T) {
-	eng := New(testProjectDir(t))
+	chdir(t, testProjectDir(t))
+	eng := New([]string{"./..."})
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
@@ -66,17 +80,18 @@ func TestDiscoverAll_NoMutators(t *testing.T) {
 	}
 }
 
-func TestDiscoverAll_InvalidDir(t *testing.T) {
-	eng := New("/nonexistent/path/that/does/not/exist", &mutator.ComparisonMutator{})
+func TestDiscoverAll_InvalidPattern(t *testing.T) {
+	eng := New([]string{"./nonexistent_package_xyz"}, &mutator.ComparisonMutator{})
 
 	_, err := eng.DiscoverAll()
 	if err == nil {
-		t.Error("expected error for nonexistent directory")
+		t.Error("expected error for nonexistent package pattern")
 	}
 }
 
 func TestDiscoverAll_SkipsTestFiles(t *testing.T) {
-	eng := New(testProjectDir(t), &mutator.ComparisonMutator{})
+	chdir(t, testProjectDir(t))
+	eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
@@ -91,8 +106,9 @@ func TestDiscoverAll_SkipsTestFiles(t *testing.T) {
 }
 
 func TestPrepareAndCleanup(t *testing.T) {
+	chdir(t, testProjectDir(t))
 	compMut := &mutator.ComparisonMutator{}
-	eng := New(testProjectDir(t), compMut)
+	eng := New([]string{"./..."}, compMut)
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
@@ -128,7 +144,6 @@ func TestPrepareAndCleanup(t *testing.T) {
 	if len(overlay.Replace) != 1 {
 		t.Errorf("expected 1 replacement in overlay, got %d", len(overlay.Replace))
 	}
-	// Overlay should map original file to temp mutated file
 	for orig, repl := range overlay.Replace {
 		if orig != points[0].File {
 			t.Errorf("overlay key should be %s, got %s", points[0].File, orig)
@@ -149,7 +164,7 @@ func TestPrepareAndCleanup(t *testing.T) {
 		t.Errorf("mutated file should be valid Go: %v", err)
 	}
 
-	// Verify mutation was applied (the formatted source should differ from original)
+	// Verify mutation was applied
 	origSrc, err := os.ReadFile(points[0].File)
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +183,7 @@ func TestPrepareAndCleanup(t *testing.T) {
 
 func TestPrepare_InvalidFile(t *testing.T) {
 	compMut := &mutator.ComparisonMutator{}
-	eng := New(testProjectDir(t), compMut)
+	eng := New([]string{"./..."}, compMut)
 
 	bogusPoint := mutator.MutationPoint{
 		File:   "/nonexistent/file.go",
@@ -181,51 +196,10 @@ func TestPrepare_InvalidFile(t *testing.T) {
 	}
 }
 
-func TestDiscoverAll_MixedFileTypes(t *testing.T) {
-	// Create a temp dir with a .go file, a .txt file, and a _test.go file
-	tmpDir := t.TempDir()
-
-	// Write a valid go.mod
-	gomod := []byte("module example.com/mixed\n\ngo 1.21\n")
-	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), gomod, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// .go file with a comparison
-	goSrc := []byte("package mixed\n\nfunc f(a, b int) bool { return a > b }\n")
-	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), goSrc, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Non-go file (should be skipped)
-	if err := os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("hello"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Test file (should be skipped)
-	testSrc := []byte("package mixed\n\nimport \"testing\"\n\nfunc TestF(t *testing.T) { if 1 > 2 {} }\n")
-	if err := os.WriteFile(filepath.Join(tmpDir, "main_test.go"), testSrc, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	eng := New(tmpDir, &mutator.ComparisonMutator{})
-	points, err := eng.DiscoverAll()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Should find only the comparison in main.go, not in _test.go or .txt
-	if len(points) != 1 {
-		t.Errorf("expected 1 mutation point, got %d", len(points))
-	}
-	if len(points) > 0 && strings.HasSuffix(points[0].File, "_test.go") {
-		t.Error("should not find mutations in test files")
-	}
-}
-
 func TestPrepare_AllPoints(t *testing.T) {
+	chdir(t, testProjectDir(t))
 	compMut := &mutator.ComparisonMutator{}
-	eng := New(testProjectDir(t), compMut)
+	eng := New([]string{"./..."}, compMut)
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
@@ -238,7 +212,6 @@ func TestPrepare_AllPoints(t *testing.T) {
 			t.Errorf("point[%d]: Prepare failed: %v", i, err)
 			continue
 		}
-		// Verify it's parseable
 		mutatedSrc, err := os.ReadFile(filepath.Join(m.TempDir, "mutated.go"))
 		if err != nil {
 			t.Errorf("point[%d]: read mutated file: %v", i, err)
