@@ -42,6 +42,7 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 - **Progress spinner** — Real-time progress indicator on stderr
 - **Skip directive** — `//mutest:skip` to exclude functions or lines from mutation
 - **Threshold gate** — `-threshold` flag for CI quality gates
+- **False positive reduction** — Automatically skips `len(x) > 0` and similar no-op mutations
 - **JSON output** — Machine-readable output for CI pipelines and AI agents (`-json`)
 - **Dry-run mode** — Preview mutations without running tests (`-dry-run`)
 - **Extensible** — `Mutator` interface for adding new mutation tiers
@@ -271,6 +272,19 @@ $ mutest -dry-run -json ./...
 
 Go's [`-overlay` flag](https://pkg.go.dev/cmd/go#hdr-Compile_packages_and_dependencies) tells the compiler "use this file instead of that one" without touching disk. Each mutant gets its own overlay, its own `go test` process, and its own goroutine. **Original source files are never modified.**
 
+### Skipped Mutations
+
+mutest automatically skips mutations that are known to produce false positives:
+
+| Pattern | Example | Why skipped |
+|---------|---------|-------------|
+| `len(x)` compared to `0` | `len(s) > 0` → `len(s) >= 0` | `len()` never returns negative, so the mutation cannot change behavior |
+| `cap(x)` compared to `0` | `cap(s) > 0` → `cap(s) >= 0` | Same as `len()` — `cap()` is always non-negative |
+
+These comparisons are collection-emptiness guards, not domain-logic boundaries. Mutating them always produces equivalent behavior, adding noise without signal.
+
+Comparisons with non-zero literals (e.g., `len(s) > 1`) are **not** skipped — the boundary between 1 and 2 is meaningful.
+
 ---
 
 ## CI Integration
@@ -351,6 +365,7 @@ Register it in `main.go`. No changes to engine or runner.
 - [x] `//mutest:skip` directive (function-level and line-level)
 - [x] `-threshold` flag for CI quality gates
 - [x] Progress spinner
+- [x] False positive reduction (`len()/cap()` vs `0` auto-skip)
 - [ ] **Tier 3**: `&&` ↔ `||` mutations
 - [ ] Coverage-based skip (don't test mutations on uncovered lines)
 - [ ] JUnit report output
