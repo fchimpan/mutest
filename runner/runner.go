@@ -42,7 +42,7 @@ type Config struct {
 type ProgressFunc func(result Result, done, total int)
 
 // Run tests all mutants with bounded parallelism and returns a Summary.
-func Run(ctx context.Context, eng *engine.Engine, mut mutator.Mutator, points []mutator.MutationPoint, cfg Config, progress ProgressFunc) *Summary {
+func Run(ctx context.Context, eng *engine.Engine, points []mutator.MutationPoint, cfg Config, progress ProgressFunc) *Summary {
 	start := time.Now()
 	results := make([]Result, len(points))
 	sem := make(chan struct{}, cfg.Workers)
@@ -57,7 +57,7 @@ func Run(ctx context.Context, eng *engine.Engine, mut mutator.Mutator, points []
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			r := testMutant(ctx, eng, mut, pt, cfg)
+			r := testMutant(ctx, eng, pt, cfg)
 			results[idx] = r
 
 			if progress != nil {
@@ -89,10 +89,10 @@ func Run(ctx context.Context, eng *engine.Engine, mut mutator.Mutator, points []
 	return summary
 }
 
-func testMutant(ctx context.Context, eng *engine.Engine, mut mutator.Mutator, pt mutator.MutationPoint, cfg Config) Result {
+func testMutant(ctx context.Context, eng *engine.Engine, pt mutator.MutationPoint, cfg Config) Result {
 	start := time.Now()
 
-	m, err := eng.Prepare(mut, pt)
+	m, err := eng.Prepare(pt)
 	if err != nil {
 		return Result{Point: pt, Err: err, Duration: time.Since(start)}
 	}

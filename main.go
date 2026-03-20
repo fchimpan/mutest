@@ -25,13 +25,14 @@ var (
 )
 
 type config struct {
-	Patterns []string
-	Workers  int
-	Timeout  time.Duration
-	Verbose  bool
-	Run      string
-	JSON     bool
-	DryRun   bool
+	Patterns  []string
+	Workers   int
+	Timeout   time.Duration
+	Verbose   bool
+	Run       string
+	JSON      bool
+	DryRun    bool
+	Threshold float64
 }
 
 func main() {
@@ -42,6 +43,7 @@ func main() {
 	run := flag.String("run", "", "regexp to pass to go test -run")
 	jsonOutput := flag.Bool("json", false, "emit results as JSON")
 	dryRun := flag.Bool("dry-run", false, "discover mutations without running tests")
+	threshold := flag.Float64("threshold", 0, "minimum kill rate percentage (0-100); exit 1 if below (0 = any survived mutant fails)")
 	flag.Parse()
 
 	if *showVersion {
@@ -55,13 +57,14 @@ func main() {
 	}
 
 	cfg := config{
-		Patterns: patterns,
-		Workers:  *workers,
-		Timeout:  *timeout,
-		Verbose:  *verbose,
-		Run:      *run,
-		JSON:     *jsonOutput,
-		DryRun:   *dryRun,
+		Patterns:  patterns,
+		Workers:   *workers,
+		Timeout:   *timeout,
+		Verbose:   *verbose,
+		Run:       *run,
+		JSON:      *jsonOutput,
+		DryRun:    *dryRun,
+		Threshold: *threshold,
 	}
 
 	code := run2(cfg, os.Stdout, os.Stderr)
@@ -77,6 +80,9 @@ func validateConfig(cfg config) error {
 	if cfg.Timeout <= 0 {
 		return fmt.Errorf("-timeout must be > 0, got %s", cfg.Timeout)
 	}
+	if cfg.Threshold < 0 || cfg.Threshold > 100 {
+		return fmt.Errorf("-threshold must be between 0 and 100, got %.1f", cfg.Threshold)
+	}
 	return nil
 }
 
@@ -87,8 +93,7 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	compMut := &mutator.ComparisonMutator{}
-	eng := engine.New(cfg.Patterns, compMut)
+	eng := engine.New(cfg.Patterns, &mutator.ComparisonMutator{}, &mutator.EqualityMutator{})
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
@@ -133,6 +138,7 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 	}
 
 	var progress runner.ProgressFunc
+	var sp *spinner
 	if cfg.Verbose {
 		if cfg.JSON {
 			// NDJSON streaming: one JSON object per line, reuse a single encoder.
@@ -152,9 +158,19 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 					status, rpc.get(r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc, r.Duration.Round(time.Millisecond))
 			}
 		}
+	} else if !cfg.JSON && isTerminal(stderr) {
+		sp = newSpinner(stderr, len(points))
+		sp.start()
+		progress = func(_ runner.Result, done, total int) {
+			sp.update(done)
+		}
 	}
 
-	summary := runner.Run(context.Background(), eng, compMut, points, runCfg, progress)
+	summary := runner.Run(context.Background(), eng, points, runCfg, progress)
+
+	if sp != nil {
+		sp.stop()
+	}
 
 	if cfg.JSON {
 		// When verbose, results were already streamed as NDJSON;
@@ -164,6 +180,13 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		printReport(stdout, summary, rpc)
 	}
 
+	if cfg.Threshold > 0 {
+		killRate := calcKillRate(summary)
+		if killRate < cfg.Threshold {
+			return 1
+		}
+		return 0
+	}
 	if summary.Survived > 0 {
 		return 1
 	}

@@ -53,7 +53,7 @@ func TestRun_Integration(t *testing.T) {
 		Patterns: []string{"./..."},
 	}
 
-	summary := Run(context.Background(), eng, compMut, points, cfg, nil)
+	summary := Run(context.Background(), eng, points, cfg, nil)
 
 	if summary.Total != len(points) {
 		t.Errorf("expected Total=%d, got %d", len(points), summary.Total)
@@ -103,7 +103,7 @@ func TestRun_ProgressCallback(t *testing.T) {
 		}
 	}
 
-	Run(context.Background(), eng, compMut, points, cfg, progress)
+	Run(context.Background(), eng, points, cfg, progress)
 
 	if int(callCount.Load()) != len(points) {
 		t.Errorf("progress called %d times, expected %d", callCount.Load(), len(points))
@@ -114,7 +114,7 @@ func TestRun_EmptyPoints(t *testing.T) {
 	eng := engine.New([]string{"./..."}, &mutator.ComparisonMutator{})
 	cfg := Config{Workers: 1, Timeout: 10 * time.Second, Patterns: []string{"./..."}}
 
-	summary := Run(context.Background(), eng, &mutator.ComparisonMutator{}, nil, cfg, nil)
+	summary := Run(context.Background(), eng, nil, cfg, nil)
 
 	if summary.Total != 0 {
 		t.Errorf("expected 0 total, got %d", summary.Total)
@@ -131,14 +131,15 @@ func TestRun_PrepareError(t *testing.T) {
 
 	bogusPoints := []mutator.MutationPoint{
 		{
-			File:     "/nonexistent/file.go",
-			Package:  "fake",
-			Line:     1,
-			Column:   1,
-			NodeID:   0,
-			Original: token.GTR,
-			Mutated:  token.GEQ,
-			Desc:     "> to >=",
+			File:        "/nonexistent/file.go",
+			Package:     "fake",
+			Line:        1,
+			Column:      1,
+			NodeID:      0,
+			Original:    token.GTR,
+			Mutated:     token.GEQ,
+			Desc:        "> to >=",
+			MutatorName: "comparison-boundary",
 		},
 	}
 
@@ -148,7 +149,7 @@ func TestRun_PrepareError(t *testing.T) {
 		Patterns: []string{"./..."},
 	}
 
-	summary := Run(context.Background(), eng, compMut, bogusPoints, cfg, nil)
+	summary := Run(context.Background(), eng, bogusPoints, cfg, nil)
 
 	if summary.Total != 1 {
 		t.Errorf("expected Total=1, got %d", summary.Total)
@@ -180,7 +181,7 @@ func TestRun_ContextCancellation(t *testing.T) {
 		Patterns: []string{"./..."},
 	}
 
-	summary := Run(ctx, eng, compMut, points, cfg, nil)
+	summary := Run(ctx, eng, points, cfg, nil)
 
 	if summary.Total != len(points) {
 		t.Errorf("expected Total=%d, got %d", len(points), summary.Total)

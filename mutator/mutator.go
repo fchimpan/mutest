@@ -7,15 +7,16 @@ import (
 
 // MutationPoint describes a single mutation opportunity in source code.
 type MutationPoint struct {
-	File       string      // absolute path to the original .go file
-	Package    string      // package name containing the file
-	ImportPath string      // Go import path of the package (e.g. "github.com/foo/bar/pkg")
-	Line       int         // 1-based line number
-	Column     int         // 1-based column number
-	Original   token.Token // original operator, e.g. token.GTR
-	Mutated    token.Token // replacement operator, e.g. token.GEQ
-	NodeID     int         // index to identify the BinaryExpr in AST walk order
-	Desc       string      // human-readable description, e.g. "> to >="
+	File        string      // absolute path to the original .go file
+	Package     string      // package name containing the file
+	ImportPath  string      // Go import path of the package (e.g. "github.com/foo/bar/pkg")
+	Line        int         // 1-based line number
+	Column      int         // 1-based column number
+	Original    token.Token // original operator, e.g. token.GTR
+	Mutated     token.Token // replacement operator, e.g. token.GEQ
+	NodeID      int         // index to identify the BinaryExpr in AST walk order
+	Desc        string      // human-readable description, e.g. "> to >="
+	MutatorName string      // name of the mutator that discovered this point
 }
 
 // Mutator discovers mutation opportunities and applies them to AST nodes.

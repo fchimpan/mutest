@@ -585,6 +585,132 @@ func TestToJSONResult(t *testing.T) {
 	})
 }
 
+// --- Threshold tests ---
+
+func TestRun_Threshold_Met(t *testing.T) {
+	chdir(t, "testdata/project")
+
+	var stdout, stderr bytes.Buffer
+	cfg := config{
+		Patterns:  []string{"./..."},
+		Workers:   2,
+		Timeout:   30 * time.Second,
+		Threshold: 20.0, // kill rate is 25%, so 20% threshold should pass
+	}
+
+	code := run2(cfg, &stdout, &stderr)
+
+	if code != 0 {
+		t.Errorf("expected exit code 0 (threshold met), got %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRun_Threshold_NotMet(t *testing.T) {
+	chdir(t, "testdata/project")
+
+	var stdout, stderr bytes.Buffer
+	cfg := config{
+		Patterns:  []string{"./..."},
+		Workers:   2,
+		Timeout:   30 * time.Second,
+		Threshold: 90.0, // kill rate is 50%, so 90% threshold should fail
+	}
+
+	code := run2(cfg, &stdout, &stderr)
+
+	if code != 1 {
+		t.Errorf("expected exit code 1 (threshold not met), got %d", code)
+	}
+}
+
+func TestRun_Threshold_Zero_DefaultBehavior(t *testing.T) {
+	chdir(t, "testdata/project")
+
+	var stdout, stderr bytes.Buffer
+	cfg := config{
+		Patterns:  []string{"./..."},
+		Workers:   2,
+		Timeout:   30 * time.Second,
+		Threshold: 0, // default: any survived = fail
+	}
+
+	code := run2(cfg, &stdout, &stderr)
+
+	// testdata has survived mutants, so with threshold=0 (default) it should return 1
+	if code != 1 {
+		t.Errorf("expected exit code 1 (default: survived > 0), got %d", code)
+	}
+}
+
+func TestValidateConfig_InvalidThreshold(t *testing.T) {
+	tests := []struct {
+		name      string
+		threshold float64
+	}{
+		{"negative", -1},
+		{"over 100", 101},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			cfg := config{
+				Patterns:  []string{"./..."},
+				Workers:   1,
+				Timeout:   10 * time.Second,
+				Threshold: tt.threshold,
+			}
+			code := run2(cfg, &stdout, &stderr)
+			if code != 2 {
+				t.Errorf("expected exit code 2, got %d", code)
+			}
+			if !strings.Contains(stderr.String(), "-threshold") {
+				t.Errorf("expected threshold validation error, got: %s", stderr.String())
+			}
+		})
+	}
+}
+
+// --- MutatorName in discovery ---
+
+func TestRun_EqualityMutator_Discovered(t *testing.T) {
+	tmpDir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod":   "module example.com/eq\n\ngo 1.21\n",
+		"eq.go":    "package eq\n\nfunc Equal(a, b int) bool { return a == b }\n",
+		"eq_test.go": "package eq\n\nimport \"testing\"\n\nfunc TestEqual(t *testing.T) { if !Equal(3,3) { t.Fail() }; if Equal(3,4) { t.Fail() } }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, tmpDir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := config{
+		Patterns: []string{"./..."},
+		Workers:  1,
+		Timeout:  30 * time.Second,
+		DryRun:   true,
+		JSON:     true,
+	}
+
+	code := run2(cfg, &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+
+	var points []jsonMutationPoint
+	if err := json.Unmarshal(stdout.Bytes(), &points); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, stdout.String())
+	}
+	if len(points) != 1 {
+		t.Fatalf("expected 1 equality mutation point, got %d", len(points))
+	}
+	if points[0].Original != "==" || points[0].Mutated != "!=" {
+		t.Errorf("expected == to != mutation, got %s to %s", points[0].Original, points[0].Mutated)
+	}
+}
+
 func TestCalcKillRate(t *testing.T) {
 	tests := []struct {
 		name    string
