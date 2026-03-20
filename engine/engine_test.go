@@ -64,6 +64,9 @@ func TestDiscoverAll(t *testing.T) {
 		if p.Package != "testproject" {
 			t.Errorf("point[%d]: expected package testproject, got %s", i, p.Package)
 		}
+		if p.ImportPath == "" {
+			t.Errorf("point[%d]: empty import path", i)
+		}
 	}
 }
 

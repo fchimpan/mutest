@@ -105,7 +105,13 @@ func testMutant(ctx context.Context, eng *engine.Engine, mut mutator.Mutator, pt
 	if cfg.Run != "" {
 		args = append(args, "-run", cfg.Run)
 	}
-	args = append(args, cfg.Patterns...)
+	// Test only the package containing the mutated file instead of all patterns.
+	// This avoids compiling/testing unrelated packages for each mutant.
+	if pt.ImportPath != "" {
+		args = append(args, pt.ImportPath)
+	} else {
+		args = append(args, cfg.Patterns...)
+	}
 
 	cmd := exec.CommandContext(testCtx, "go", args...)
 	output, err := cmd.CombinedOutput()

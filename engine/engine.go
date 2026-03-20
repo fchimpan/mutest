@@ -27,8 +27,9 @@ type Mutant struct {
 
 // goPackage represents a subset of `go list -json` output.
 type goPackage struct {
-	Dir     string   `json:"Dir"`
-	GoFiles []string `json:"GoFiles"`
+	Dir        string   `json:"Dir"`
+	ImportPath string   `json:"ImportPath"`
+	GoFiles    []string `json:"GoFiles"`
 }
 
 // Engine scans packages, discovers mutations, and prepares overlays.
@@ -36,6 +37,7 @@ type Engine struct {
 	mutators    []mutator.Mutator
 	patterns    []string           // package patterns (e.g. "./...", "./pkg/calc")
 	sourceCache map[string][]byte  // file path → source bytes
+	importPaths map[string]string  // file path → import path
 }
 
 // New creates an Engine for the given package patterns with the given mutators.
@@ -45,6 +47,7 @@ func New(patterns []string, mutators ...mutator.Mutator) *Engine {
 		mutators:    mutators,
 		patterns:    patterns,
 		sourceCache: make(map[string][]byte),
+		importPaths: make(map[string]string),
 	}
 }
 
@@ -71,9 +74,13 @@ func (e *Engine) DiscoverAll() ([]mutator.MutationPoint, error) {
 
 		e.sourceCache[path] = src
 		pkg := file.Name.Name
+		importPath := e.importPaths[path]
 
 		for _, m := range e.mutators {
 			pts := m.Discover(fset, file, path, pkg)
+			for i := range pts {
+				pts[i].ImportPath = importPath
+			}
 			points = append(points, pts...)
 		}
 	}
@@ -99,7 +106,9 @@ func (e *Engine) resolveFiles() ([]string, error) {
 			return nil, err
 		}
 		for _, f := range pkg.GoFiles {
-			files = append(files, filepath.Join(pkg.Dir, f))
+			absPath := filepath.Join(pkg.Dir, f)
+			files = append(files, absPath)
+			e.importPaths[absPath] = pkg.ImportPath
 		}
 	}
 	return files, nil
