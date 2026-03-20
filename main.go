@@ -23,18 +23,19 @@ var (
 )
 
 type config struct {
-	Dir     string
-	Workers int
-	Timeout time.Duration
-	Verbose bool
+	Patterns []string
+	Workers  int
+	Timeout  time.Duration
+	Verbose  bool
+	Run      string
 }
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
-	dir := flag.String("dir", ".", "root directory of the Go project to mutate")
 	workers := flag.Int("workers", runtime.NumCPU(), "max parallel test processes")
 	timeout := flag.Duration("timeout", 30*time.Second, "per-mutant test timeout")
 	verbose := flag.Bool("v", false, "print details for each mutant")
+	run := flag.String("run", "", "regexp to pass to go test -run")
 	flag.Parse()
 
 	if *showVersion {
@@ -42,23 +43,29 @@ func main() {
 		return
 	}
 
-	cfg := config{
-		Dir:     *dir,
-		Workers: *workers,
-		Timeout: *timeout,
-		Verbose: *verbose,
+	patterns := flag.Args()
+	if len(patterns) == 0 {
+		patterns = []string{"./..."}
 	}
 
-	code := run(cfg, os.Stdout, os.Stderr)
+	cfg := config{
+		Patterns: patterns,
+		Workers:  *workers,
+		Timeout:  *timeout,
+		Verbose:  *verbose,
+		Run:      *run,
+	}
+
+	code := run2(cfg, os.Stdout, os.Stderr)
 	if code != 0 {
 		os.Exit(code)
 	}
 }
 
-// run executes the mutation testing pipeline, returning an exit code.
-func run(cfg config, stdout, stderr io.Writer) int {
+// run2 executes the mutation testing pipeline, returning an exit code.
+func run2(cfg config, stdout, stderr io.Writer) int {
 	compMut := &mutator.ComparisonMutator{}
-	eng := engine.New(cfg.Dir, compMut)
+	eng := engine.New(cfg.Patterns, compMut)
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
@@ -75,15 +82,13 @@ func run(cfg config, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
 
 	runCfg := runner.Config{
-		Workers: cfg.Workers,
-		Timeout: cfg.Timeout,
+		Workers:  cfg.Workers,
+		Timeout:  cfg.Timeout,
+		Patterns: cfg.Patterns,
+		Run:      cfg.Run,
 	}
 
-	absDir, err := filepath.Abs(cfg.Dir)
-	if err != nil {
-		fmt.Fprintf(stderr, "mutest: cannot resolve directory: %v\n", err)
-		return 2
-	}
+	cwd, _ := os.Getwd()
 
 	var progress runner.ProgressFunc
 	if cfg.Verbose {
@@ -95,13 +100,13 @@ func run(cfg config, stdout, stderr io.Writer) int {
 				status = "KILLED"
 			}
 			fmt.Fprintf(stdout, "[%-8s] %s:%d:%d  %s  (%s)\n",
-				status, relPath(absDir, r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc, r.Duration.Round(time.Millisecond))
+				status, relPath(cwd, r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc, r.Duration.Round(time.Millisecond))
 		}
 	}
 
 	summary := runner.Run(context.Background(), eng, compMut, points, runCfg, progress)
 
-	printReport(stdout, summary, absDir)
+	printReport(stdout, summary, cwd)
 
 	if summary.Survived > 0 {
 		return 1
@@ -117,7 +122,7 @@ func relPath(base, path string) string {
 	return rel
 }
 
-func printReport(w io.Writer, s *runner.Summary, baseDir string) {
+func printReport(w io.Writer, s *runner.Summary, cwd string) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "===== Mutation Testing Summary =====")
 	fmt.Fprintf(w, "Total:     %d\n", s.Total)
@@ -145,7 +150,7 @@ func printReport(w io.Writer, s *runner.Summary, baseDir string) {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Survived mutants (test gaps):")
 		for i, r := range survived {
-			fmt.Fprintf(w, "  %d. %s:%d:%d  %s\n", i+1, relPath(baseDir, r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc)
+			fmt.Fprintf(w, "  %d. %s:%d:%d  %s\n", i+1, relPath(cwd, r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc)
 		}
 	}
 }
