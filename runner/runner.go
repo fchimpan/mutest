@@ -64,8 +64,8 @@ func Run(ctx context.Context, eng *engine.Engine, mut mutator.Mutator, points []
 				mu.Lock()
 				done++
 				d := done
-				mu.Unlock()
 				progress(r, d, len(points))
+				mu.Unlock()
 			}
 		}(i, point)
 	}
