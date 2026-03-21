@@ -101,6 +101,12 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	if err := eng.InitTempDir(); err != nil {
+		fmt.Fprintf(stderr, "mutest: error creating temp directory: %v\n", err)
+		return 2
+	}
+	defer eng.CleanupAll()
+
 	cwd, _ := os.Getwd()
 	rpc := newRelPathCache(cwd)
 
