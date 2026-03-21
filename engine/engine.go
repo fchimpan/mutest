@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/fchimpan/mutest/mutator"
 )
@@ -42,6 +43,7 @@ type Engine struct {
 	importPaths map[string]string  // file path → import path
 	mutatorMap  map[string]mutator.Mutator // name → mutator (for fast lookup)
 	baseDir     string             // shared temp directory for all mutants
+	counter     atomic.Int64       // monotonic counter for unique sub-directory names
 }
 
 // New creates an Engine for the given package patterns with the given mutators.
@@ -127,9 +129,6 @@ func (e *Engine) resolveFiles() ([]string, error) {
 	return files, nil
 }
 
-// Prepare re-parses the source file for the given mutation point,
-// applies the mutation, writes a temp file, and generates an overlay.json.
-// The mutator is looked up by point.MutatorName from the engine's registered mutators.
 // InitTempDir creates a shared temporary directory for all mutants.
 // Must be called before Prepare. Call CleanupAll when done.
 func (e *Engine) InitTempDir() error {
@@ -145,26 +144,6 @@ func (e *Engine) InitTempDir() error {
 func (e *Engine) CleanupAll() {
 	if e.baseDir != "" {
 		os.RemoveAll(e.baseDir)
-	}
-}
-
-// tokenString returns the source representation of a token.
-func tokenString(tok token.Token) string {
-	switch tok {
-	case token.GTR:
-		return ">"
-	case token.GEQ:
-		return ">="
-	case token.LSS:
-		return "<"
-	case token.LEQ:
-		return "<="
-	case token.EQL:
-		return "=="
-	case token.NEQ:
-		return "!="
-	default:
-		return tok.String()
 	}
 }
 
@@ -193,8 +172,8 @@ func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) 
 	}
 
 	// Direct byte rewrite: replace the original operator with the mutated one.
-	origStr := tokenString(point.Original)
-	mutStr := tokenString(point.Mutated)
+	origStr := point.Original.String()
+	mutStr := point.Mutated.String()
 	offset := lineColToOffset(src, point.Line, point.Column)
 	if offset < 0 || offset+len(origStr) > len(src) {
 		return nil, fmt.Errorf("invalid offset for %s:%d:%d", point.File, point.Line, point.Column)
@@ -214,7 +193,7 @@ func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) 
 	var tempDir string
 	if e.baseDir != "" {
 		// Use sub-directory under the shared base dir to avoid MkdirTemp overhead.
-		subDir := fmt.Sprintf("m%d_%d_%s", point.Line, point.Column, point.MutatorName)
+		subDir := fmt.Sprintf("m%d", e.counter.Add(1))
 		tempDir = filepath.Join(e.baseDir, subDir)
 		if err := os.MkdirAll(tempDir, 0755); err != nil {
 			return nil, err
@@ -237,8 +216,10 @@ func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) 
 		return nil, err
 	}
 
-	// Build overlay JSON directly to avoid json.Marshal overhead.
-	overlayData := []byte(`{"Replace":{"` + jsonEscape(point.File) + `":"` + jsonEscape(mutatedPath) + `"}}`)
+	overlayData, err := json.Marshal(Overlay{Replace: map[string]string{point.File: mutatedPath}})
+	if err != nil {
+		return nil, err
+	}
 
 	overlayPath := filepath.Join(tempDir, "overlay.json")
 	if err := os.WriteFile(overlayPath, overlayData, 0644); err != nil {
@@ -250,23 +231,6 @@ func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) 
 		OverlayPath: overlayPath,
 		TempDir:     tempDir,
 	}, nil
-}
-
-// jsonEscape escapes a string for embedding in a JSON string literal.
-func jsonEscape(s string) string {
-	b := strings.Builder{}
-	b.Grow(len(s))
-	for _, c := range s {
-		switch c {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		default:
-			b.WriteRune(c)
-		}
-	}
-	return b.String()
 }
 
 // Cleanup removes the temp directory for a mutant.
