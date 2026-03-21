@@ -270,7 +270,12 @@ func jsonEscape(s string) string {
 }
 
 // Cleanup removes the temp directory for a mutant.
+// When a shared base directory is used (InitTempDir was called), individual
+// cleanup is skipped and deferred to CleanupAll for better performance.
 func (e *Engine) Cleanup(m *Mutant) {
+	if e.baseDir != "" {
+		return // deferred to CleanupAll
+	}
 	os.RemoveAll(m.TempDir)
 }
 
