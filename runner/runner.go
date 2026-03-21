@@ -41,8 +41,33 @@ type Config struct {
 // ProgressFunc is called after each mutant is tested. It may be nil.
 type ProgressFunc func(result Result, done, total int)
 
+// warmBuildCache compiles (but does not run) test binaries for the packages
+// that will be mutated. This populates Go's build cache so that each mutant
+// only needs to recompile the single changed file instead of the whole
+// dependency tree.
+func warmBuildCache(ctx context.Context, points []mutator.MutationPoint) {
+	pkgs := make(map[string]struct{})
+	for _, pt := range points {
+		if pt.ImportPath != "" {
+			pkgs[pt.ImportPath] = struct{}{}
+		}
+	}
+	if len(pkgs) == 0 {
+		return
+	}
+
+	args := []string{"test", "-run=^$", "-count=1"}
+	for pkg := range pkgs {
+		args = append(args, pkg)
+	}
+
+	cmd := exec.CommandContext(ctx, "go", args...)
+	_ = cmd.Run()
+}
+
 // Run tests all mutants with bounded parallelism and returns a Summary.
 func Run(ctx context.Context, eng *engine.Engine, points []mutator.MutationPoint, cfg Config, progress ProgressFunc) *Summary {
+	warmBuildCache(ctx, points)
 	start := time.Now()
 	results := make([]Result, len(points))
 	sem := make(chan struct{}, cfg.Workers)
@@ -101,7 +126,7 @@ func testMutant(ctx context.Context, eng *engine.Engine, pt mutator.MutationPoin
 	testCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	args := []string{"test", "-overlay=" + m.OverlayPath}
+	args := []string{"test", "-overlay=" + m.OverlayPath, "-count=1", "-vet=off", "-failfast"}
 	if cfg.Run != "" {
 		args = append(args, "-run", cfg.Run)
 	}

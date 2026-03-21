@@ -44,8 +44,8 @@ func TestDiscoverAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(points) != 4 {
-		t.Errorf("expected 4 mutation points, got %d", len(points))
+	if len(points) != 11 {
+		t.Errorf("expected 11 mutation points, got %d", len(points))
 	}
 
 	for i, p := range points {
