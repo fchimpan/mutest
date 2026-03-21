@@ -42,10 +42,6 @@ type Config struct {
 // ProgressFunc is called after each mutant is tested. It may be nil.
 type ProgressFunc func(result Result, done, total int)
 
-// warmBuildCache compiles (but does not run) test binaries for the packages
-// that will be mutated. This populates Go's build cache so that each mutant
-// only needs to recompile the single changed file instead of the whole
-// dependency tree.
 // warmBuildCache compiles test binaries for the packages that will be mutated
 // without actually running them. This populates Go's build cache so that each
 // mutant only needs to recompile the single changed file.
@@ -57,13 +53,12 @@ func warmBuildCache(ctx context.Context, points []mutator.MutationPoint) {
 		}
 	}
 
-	// Build test binaries in parallel per package to warm the cache.
 	var wg sync.WaitGroup
 	for pkg := range pkgs {
 		wg.Add(1)
 		go func(p string) {
 			defer wg.Done()
-			cmd := exec.CommandContext(ctx, "go", "test", "-c", "-vet=off", "-o", os.DevNull, p)
+			cmd := exec.CommandContext(ctx, "go", "test", "-c", "-vet=off", "-p=1", `-ldflags=-s -w`, "-o", os.DevNull, p)
 			_ = cmd.Run()
 		}(pkg)
 	}
@@ -73,6 +68,7 @@ func warmBuildCache(ctx context.Context, points []mutator.MutationPoint) {
 // Run tests all mutants with bounded parallelism and returns a Summary.
 func Run(ctx context.Context, eng *engine.Engine, points []mutator.MutationPoint, cfg Config, progress ProgressFunc) *Summary {
 	warmBuildCache(ctx, points)
+
 	start := time.Now()
 	results := make([]Result, len(points))
 	sem := make(chan struct{}, cfg.Workers)
@@ -131,12 +127,11 @@ func testMutant(ctx context.Context, eng *engine.Engine, pt mutator.MutationPoin
 	testCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	args := []string{"test", "-overlay=" + m.OverlayPath, "-count=1", "-vet=off", "-failfast"}
+	args := []string{"test", "-overlay=" + m.OverlayPath, "-count=1", "-vet=off", "-failfast", "-p=1", `-ldflags=-s -w`}
 	if cfg.Run != "" {
 		args = append(args, "-run", cfg.Run)
 	}
 	// Test only the package containing the mutated file instead of all patterns.
-	// This avoids compiling/testing unrelated packages for each mutant.
 	if pt.ImportPath != "" {
 		args = append(args, pt.ImportPath)
 	} else {
