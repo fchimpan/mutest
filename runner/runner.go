@@ -42,10 +42,10 @@ type Config struct {
 // ProgressFunc is called after each mutant is tested. It may be nil.
 type ProgressFunc func(result Result, done, total int)
 
-// warmBuildCache compiles test binaries for the packages that will be mutated
+// WarmBuildCache compiles test binaries for the packages that will be mutated
 // without actually running them. This populates Go's build cache so that each
 // mutant only needs to recompile the single changed file.
-func warmBuildCache(ctx context.Context, points []mutator.MutationPoint) {
+func WarmBuildCache(ctx context.Context, points []mutator.MutationPoint) {
 	pkgs := make(map[string]struct{})
 	for _, pt := range points {
 		if pt.ImportPath != "" {
@@ -67,8 +67,6 @@ func warmBuildCache(ctx context.Context, points []mutator.MutationPoint) {
 
 // Run tests all mutants with bounded parallelism and returns a Summary.
 func Run(ctx context.Context, eng *engine.Engine, points []mutator.MutationPoint, cfg Config, progress ProgressFunc) *Summary {
-	warmBuildCache(ctx, points)
-
 	start := time.Now()
 	results := make([]Result, len(points))
 	sem := make(chan struct{}, cfg.Workers)

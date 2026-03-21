@@ -134,6 +134,8 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		info = stderr
 	}
 	fmt.Fprintf(info, "mutest: discovered %d mutation points\n", len(points))
+	fmt.Fprintf(info, "mutest: warming build cache...\n")
+	runner.WarmBuildCache(context.Background(), points)
 	fmt.Fprintf(info, "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
 
 	runCfg := runner.Config{
