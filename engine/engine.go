@@ -237,15 +237,8 @@ func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) 
 		return nil, err
 	}
 
-	overlay := Overlay{
-		Replace: map[string]string{
-			point.File: mutatedPath,
-		},
-	}
-	overlayData, err := json.Marshal(overlay)
-	if err != nil {
-		return nil, err
-	}
+	// Build overlay JSON directly to avoid json.Marshal overhead.
+	overlayData := []byte(`{"Replace":{"` + jsonEscape(point.File) + `":"` + jsonEscape(mutatedPath) + `"}}`)
 
 	overlayPath := filepath.Join(tempDir, "overlay.json")
 	if err := os.WriteFile(overlayPath, overlayData, 0644); err != nil {
@@ -257,6 +250,23 @@ func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) 
 		OverlayPath: overlayPath,
 		TempDir:     tempDir,
 	}, nil
+}
+
+// jsonEscape escapes a string for embedding in a JSON string literal.
+func jsonEscape(s string) string {
+	b := strings.Builder{}
+	b.Grow(len(s))
+	for _, c := range s {
+		switch c {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		default:
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
 }
 
 // Cleanup removes the temp directory for a mutant.
