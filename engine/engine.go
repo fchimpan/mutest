@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
-	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -149,26 +148,68 @@ func (e *Engine) CleanupAll() {
 	}
 }
 
+// tokenString returns the source representation of a token.
+func tokenString(tok token.Token) string {
+	switch tok {
+	case token.GTR:
+		return ">"
+	case token.GEQ:
+		return ">="
+	case token.LSS:
+		return "<"
+	case token.LEQ:
+		return "<="
+	case token.EQL:
+		return "=="
+	case token.NEQ:
+		return "!="
+	default:
+		return tok.String()
+	}
+}
+
+// lineColToOffset converts 1-based line and column to a byte offset in src.
+func lineColToOffset(src []byte, line, col int) int {
+	currentLine := 1
+	for i, b := range src {
+		if currentLine == line {
+			return i + col - 1
+		}
+		if b == '\n' {
+			currentLine++
+		}
+	}
+	return -1
+}
+
 func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) {
-	m := e.mutatorMap[point.MutatorName]
-	if m == nil {
+	if e.mutatorMap[point.MutatorName] == nil {
 		return nil, fmt.Errorf("unknown mutator: %q", point.MutatorName)
 	}
 
-	// Use cached source bytes when available to avoid repeated disk reads.
 	src := e.sourceCache[point.File]
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, point.File, src, parser.ParseComments)
-	if err != nil {
-		return nil, err
+	if src == nil {
+		return nil, fmt.Errorf("source not cached for %s", point.File)
 	}
 
-	m.Apply(file, point)
-
-	var buf bytes.Buffer
-	if err := format.Node(&buf, fset, file); err != nil {
-		return nil, err
+	// Direct byte rewrite: replace the original operator with the mutated one.
+	origStr := tokenString(point.Original)
+	mutStr := tokenString(point.Mutated)
+	offset := lineColToOffset(src, point.Line, point.Column)
+	if offset < 0 || offset+len(origStr) > len(src) {
+		return nil, fmt.Errorf("invalid offset for %s:%d:%d", point.File, point.Line, point.Column)
 	}
+
+	// Verify the original token is at the expected position.
+	if string(src[offset:offset+len(origStr)]) != origStr {
+		return nil, fmt.Errorf("expected %q at offset %d, got %q", origStr, offset, string(src[offset:offset+len(origStr)]))
+	}
+
+	// Build mutated source by splicing in the new operator.
+	mutated := make([]byte, 0, len(src)-len(origStr)+len(mutStr))
+	mutated = append(mutated, src[:offset]...)
+	mutated = append(mutated, mutStr...)
+	mutated = append(mutated, src[offset+len(origStr):]...)
 
 	var tempDir string
 	if e.baseDir != "" {
@@ -192,7 +233,7 @@ func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) 
 	}()
 
 	mutatedPath := filepath.Join(tempDir, "mutated.go")
-	if err := os.WriteFile(mutatedPath, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(mutatedPath, mutated, 0644); err != nil {
 		return nil, err
 	}
 
