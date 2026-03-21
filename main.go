@@ -138,7 +138,6 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 	}
 
 	var progress runner.ProgressFunc
-	var sp *spinner
 	if cfg.Verbose {
 		if cfg.JSON {
 			// NDJSON streaming: one JSON object per line, reuse a single encoder.
@@ -158,19 +157,9 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 					status, rpc.get(r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc, r.Duration.Round(time.Millisecond))
 			}
 		}
-	} else if !cfg.JSON && isTerminal(stderr) {
-		sp = newSpinner(stderr, len(points))
-		sp.start()
-		progress = func(_ runner.Result, done, total int) {
-			sp.update(done)
-		}
 	}
 
 	summary := runner.Run(context.Background(), eng, points, runCfg, progress)
-
-	if sp != nil {
-		sp.stop()
-	}
 
 	if cfg.JSON {
 		// When verbose, results were already streamed as NDJSON;

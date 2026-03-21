@@ -39,7 +39,6 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 - **Equality mutations** — `==` ↔ `!=` (Tier 2)
 - **Non-destructive** — Uses Go's `-overlay` flag; source files are never touched
 - **Parallel execution** — Worker pool bounded by CPU cores
-- **Progress spinner** — Real-time progress indicator on stderr
 - **Skip directive** — `//mutest:skip` to exclude functions or lines from mutation
 - **Threshold gate** — `-threshold` flag for CI quality gates
 - **False positive reduction** — Automatically skips `len(x) > 0` and similar no-op mutations
@@ -330,7 +329,6 @@ Use `-json` for structured output that integrates with other tools:
 ```
 mutest/
 ├── main.go              # CLI entry point, flags, reporting
-├── spinner.go           # Progress spinner for terminal output
 ├── mutator/
 │   ├── mutator.go       # Mutator interface & MutationPoint type
 │   ├── comparison.go    # Tier 1: boundary comparison mutations (> >= < <=)
@@ -364,7 +362,6 @@ Register it in `main.go`. No changes to engine or runner.
 - [x] **Tier 2**: `==` ↔ `!=` mutations
 - [x] `//mutest:skip` directive (function-level and line-level)
 - [x] `-threshold` flag for CI quality gates
-- [x] Progress spinner
 - [x] False positive reduction (`len()/cap()` vs `0` auto-skip)
 - [ ] **Tier 3**: `&&` ↔ `||` mutations
 - [ ] Coverage-based skip (don't test mutations on uncovered lines)
