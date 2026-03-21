@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"sync"
@@ -10,6 +11,10 @@ import (
 	"github.com/fchimpan/mutest/engine"
 	"github.com/fchimpan/mutest/mutator"
 )
+
+// Common go test flags shared between warmup and mutation runs to ensure
+// build cache consistency.
+var goTestFlags = []string{"-vet=off", "-p=1", "-ldflags=-s -w"}
 
 // Result captures the outcome of testing one mutant.
 type Result struct {
@@ -58,7 +63,9 @@ func WarmBuildCache(ctx context.Context, points []mutator.MutationPoint) {
 		wg.Add(1)
 		go func(p string) {
 			defer wg.Done()
-			cmd := exec.CommandContext(ctx, "go", "test", "-c", "-vet=off", "-p=1", `-ldflags=-s -w`, "-o", os.DevNull, p)
+			args := append([]string{"test", "-c"}, goTestFlags...)
+			args = append(args, "-o", os.DevNull, p)
+			cmd := exec.CommandContext(ctx, "go", args...)
 			_ = cmd.Run()
 		}(pkg)
 	}
@@ -125,7 +132,8 @@ func testMutant(ctx context.Context, eng *engine.Engine, pt mutator.MutationPoin
 	testCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	args := []string{"test", "-overlay=" + m.OverlayPath, "-count=1", "-vet=off", "-failfast", "-p=1", `-ldflags=-s -w`}
+	args := append([]string{"test", "-overlay=" + m.OverlayPath, "-count=1", "-failfast"}, goTestFlags...)
+	args = append(args, fmt.Sprintf("-timeout=%s", cfg.Timeout))
 	if cfg.Run != "" {
 		args = append(args, "-run", cfg.Run)
 	}
