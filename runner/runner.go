@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -45,6 +46,9 @@ type ProgressFunc func(result Result, done, total int)
 // that will be mutated. This populates Go's build cache so that each mutant
 // only needs to recompile the single changed file instead of the whole
 // dependency tree.
+// warmBuildCache compiles test binaries for the packages that will be mutated
+// without actually running them. This populates Go's build cache so that each
+// mutant only needs to recompile the single changed file.
 func warmBuildCache(ctx context.Context, points []mutator.MutationPoint) {
 	pkgs := make(map[string]struct{})
 	for _, pt := range points {
@@ -52,17 +56,18 @@ func warmBuildCache(ctx context.Context, points []mutator.MutationPoint) {
 			pkgs[pt.ImportPath] = struct{}{}
 		}
 	}
-	if len(pkgs) == 0 {
-		return
-	}
 
-	args := []string{"test", "-run=^$", "-count=1"}
+	// Build test binaries in parallel per package to warm the cache.
+	var wg sync.WaitGroup
 	for pkg := range pkgs {
-		args = append(args, pkg)
+		wg.Add(1)
+		go func(p string) {
+			defer wg.Done()
+			cmd := exec.CommandContext(ctx, "go", "test", "-c", "-vet=off", "-o", os.DevNull, p)
+			_ = cmd.Run()
+		}(pkg)
 	}
-
-	cmd := exec.CommandContext(ctx, "go", args...)
-	_ = cmd.Run()
+	wg.Wait()
 }
 
 // Run tests all mutants with bounded parallelism and returns a Summary.
