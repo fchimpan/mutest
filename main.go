@@ -52,14 +52,15 @@ func init() {
 }
 
 type config struct {
-	Patterns  []string
-	Workers   int
-	Timeout   time.Duration
-	Verbose   bool
-	Run       string
-	JSON      bool
-	DryRun    bool
-	Threshold float64
+	Patterns        []string
+	Workers         int
+	Timeout         time.Duration
+	Verbose         bool
+	Run             string
+	JSON            bool
+	DryRun          bool
+	Threshold       float64
+	SkipErrPropagation bool
 }
 
 func main() {
@@ -71,6 +72,7 @@ func main() {
 	jsonOutput := flag.Bool("json", false, "emit results as JSON")
 	dryRun := flag.Bool("dry-run", false, "discover mutations without running tests")
 	threshold := flag.Float64("threshold", 0, "minimum kill rate percentage (0-100); exit 1 if below (0 = any survived mutant fails)")
+	skipErrPropagation := flag.Bool("skip-err-propagation", true, "skip simple error propagation patterns (if err != nil { return err })")
 	flag.Parse()
 
 	if *showVersion {
@@ -95,7 +97,8 @@ func main() {
 		Run:       *run,
 		JSON:      *jsonOutput,
 		DryRun:    *dryRun,
-		Threshold: *threshold,
+		Threshold:       *threshold,
+		SkipErrPropagation: *skipErrPropagation,
 	}
 
 	code := run2(cfg, os.Stdout, os.Stderr)
@@ -124,7 +127,9 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	eng := engine.New(cfg.Patterns, &mutator.ComparisonMutator{}, &mutator.EqualityMutator{})
+	eng := engine.New(cfg.Patterns, &mutator.ComparisonMutator{}, &mutator.EqualityMutator{
+		SkipErrPropagation: cfg.SkipErrPropagation,
+	})
 
 	points, err := eng.DiscoverAll()
 	if err != nil {

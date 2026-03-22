@@ -40,7 +40,7 @@ Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `
 - **`-threshold`** — CI quality gate (e.g., `-threshold 80` fails if score < 80%)
 - **`-json`** — Machine-readable output for CI pipelines (`-json -v` for NDJSON streaming)
 - **`-dry-run`** — Preview mutations without running tests
-- **False positive reduction** — Automatically skips equivalent mutants like `len(x) > 0`
+- **Low noise** — Automatically skips equivalent mutants (`len(x) > 0`) and simple error propagation (`if err != nil { return err }`)
 - **Zero dependencies** — Go standard library only
 
 ---
@@ -184,6 +184,7 @@ Positional arguments are package patterns (default: `./...`), following the same
 | `-workers` | `NumCPU` | Max parallel test processes |
 | `-timeout` | `30s` | Per-mutant test timeout |
 | `-threshold` | `0` | Minimum kill rate % (0-100); exit 1 if below. 0 = any survived fails |
+| `-skip-err-propagation` | `true` | Skip simple error propagation patterns (`if err != nil { return err }`) |
 | `-version` | | Print version and exit |
 
 ### JSON Output
@@ -281,10 +282,17 @@ mutest automatically skips mutations that are known to produce false positives:
 |---------|---------|-------------|
 | `len(x)` compared to `0` | `len(s) > 0` → `len(s) >= 0` | `len()` never returns negative, so the mutation cannot change behavior |
 | `cap(x)` compared to `0` | `cap(s) > 0` → `cap(s) >= 0` | Same as `len()` — `cap()` is always non-negative |
-
-These comparisons are collection-emptiness guards, not domain-logic boundaries. Mutating them always produces equivalent behavior, adding noise without signal.
+| Simple error propagation | `if err != nil { return err }` | Go's idiomatic error propagation — mutating these generates noise without meaningful test gaps |
 
 Comparisons with non-zero literals (e.g., `len(s) > 1`) are **not** skipped — the boundary between 1 and 2 is meaningful.
+
+Complex error handling is **not** skipped — compound conditions (`err != nil && !timedOut`), fallback assignments, and multi-statement bodies represent real logic that should be tested.
+
+To disable error propagation skipping and mutate all `err != nil` checks:
+
+```bash
+mutest -skip-err-propagation=false ./...
+```
 
 ---
 
