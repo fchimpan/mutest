@@ -73,7 +73,11 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("mutest %s (commit: %s, built: %s)\n", version, commit, date)
+		if commit != "none" {
+			fmt.Printf("mutest %s (commit: %s, built: %s)\n", version, commit, date)
+		} else {
+			fmt.Printf("mutest %s\n", version)
+		}
 		return
 	}
 
