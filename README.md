@@ -33,20 +33,15 @@ Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `
 
 ## Features
 
-- **Boundary-value mutations** — `>` ↔ `>=`, `<` ↔ `<=`
-- **Equality mutations** — `==` ↔ `!=`
-- **Runtime instrumentation** — All mutations per package compiled into a single test binary; each mutant activated via `MUTEST_ID` env var at runtime, avoiding per-mutant recompilation
-- **Non-destructive** — Source files are never modified; mutations are injected into generated code
+- **Fast** — One build per package, all mutants activated at runtime. No per-mutant recompilation
 - **Parallel execution** — Worker pool bounded by CPU cores
-- **go test-style output** — `--- KILLED:` / `--- SURVIVED:` progress by default; `-v` shows test output like `go test -v`
-- **Skip directive** — `//mutest:skip` to exclude functions or lines from mutation
-- **Threshold gate** — `-threshold` flag for CI quality gates
-- **False positive reduction** — Automatically skips `len(x) > 0` and similar no-op mutations
-- **JSON output** — Machine-readable output for CI pipelines and AI agents (`-json`)
-- **Dry-run mode** — Preview mutations without running tests (`-dry-run`)
-- **Extensible** — `Mutator` interface for adding new mutation operators
+- **`go test`-compatible** — `--- KILLED:` / `--- SURVIVED:` output; `-v`, `-run`, `-timeout` work as expected
+- **`//mutest:skip`** — Exclude functions or lines from mutation
+- **`-threshold`** — CI quality gate (e.g., `-threshold 80` fails if score < 80%)
+- **`-json`** — Machine-readable output for CI pipelines (`-json -v` for NDJSON streaming)
+- **`-dry-run`** — Preview mutations without running tests
+- **False positive reduction** — Automatically skips equivalent mutants like `len(x) > 0`
 - **Zero dependencies** — Go standard library only
-- **CI-ready** — Exit code `1` on surviving mutants, `0` when all killed
 
 ---
 
