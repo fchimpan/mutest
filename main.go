@@ -173,6 +173,8 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 			status := "KILLED"
 			if r.Err != nil {
 				status = "ERROR"
+			} else if r.TimedOut {
+				status = "TIMEOUT"
 			} else if !r.Killed {
 				status = "SURVIVED"
 			}
@@ -265,19 +267,20 @@ func printReport(w io.Writer, s *runner.Summary, rpc *relPathCache) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "===== Mutation Testing Summary =====")
 	fmt.Fprintf(w, "Total:     %d\n", s.Total)
-
-	killRate := calcKillRate(s)
-
-	fmt.Fprintf(w, "Killed:    %d (%.1f%%)\n", s.Killed, killRate)
+	fmt.Fprintf(w, "Killed:    %d\n", s.Killed)
+	if s.TimedOut > 0 {
+		fmt.Fprintf(w, "Timeout:   %d\n", s.TimedOut)
+	}
 	fmt.Fprintf(w, "Survived:  %d\n", s.Survived)
 	if s.Errors > 0 {
 		fmt.Fprintf(w, "Errors:    %d\n", s.Errors)
 	}
+	fmt.Fprintf(w, "Score:     %.1f%%\n", calcKillRate(s))
 	fmt.Fprintf(w, "Duration:  %s\n", s.Duration.Round(time.Millisecond))
 
 	var survived []runner.Result
 	for _, r := range s.Results {
-		if r.Err == nil && !r.Killed {
+		if r.Err == nil && !r.Killed && !r.TimedOut {
 			survived = append(survived, r)
 		}
 	}
@@ -320,6 +323,7 @@ type jsonResult struct {
 type jsonSummary struct {
 	Total    int          `json:"total"`
 	Killed   int          `json:"killed"`
+	TimedOut int          `json:"timed_out"`
 	Survived int          `json:"survived"`
 	Errors   int          `json:"errors"`
 	KillRate float64      `json:"kill_rate"`
@@ -331,6 +335,8 @@ func toJSONResult(r runner.Result, rpc *relPathCache) jsonResult {
 	status := "survived"
 	if r.Err != nil {
 		status = "error"
+	} else if r.TimedOut {
+		status = "timeout"
 	} else if r.Killed {
 		status = "killed"
 	}
@@ -366,6 +372,7 @@ func writeJSONSummary(w io.Writer, s *runner.Summary, rpc *relPathCache, include
 	summary := jsonSummary{
 		Total:    s.Total,
 		Killed:   s.Killed,
+		TimedOut: s.TimedOut,
 		Survived: s.Survived,
 		Errors:   s.Errors,
 		KillRate: math.Round(killRate*10) / 10,
@@ -387,8 +394,10 @@ func fmtSeconds(d time.Duration) string {
 }
 
 func calcKillRate(s *runner.Summary) float64 {
-	if s.Total-s.Errors > 0 {
-		return float64(s.Killed) / float64(s.Total-s.Errors) * 100
+	detected := s.Killed + s.TimedOut
+	testable := s.Total - s.Errors
+	if testable > 0 {
+		return float64(detected) / float64(testable) * 100
 	}
 	return 0
 }

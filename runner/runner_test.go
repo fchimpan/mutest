@@ -58,9 +58,9 @@ func TestRun_Integration(t *testing.T) {
 	if summary.Total != len(points) {
 		t.Errorf("expected Total=%d, got %d", len(points), summary.Total)
 	}
-	if summary.Killed+summary.Survived+summary.Errors != summary.Total {
-		t.Errorf("killed(%d)+survived(%d)+errors(%d) != total(%d)",
-			summary.Killed, summary.Survived, summary.Errors, summary.Total)
+	if summary.Killed+summary.TimedOut+summary.Survived+summary.Errors != summary.Total {
+		t.Errorf("killed(%d)+timedOut(%d)+survived(%d)+errors(%d) != total(%d)",
+			summary.Killed, summary.TimedOut, summary.Survived, summary.Errors, summary.Total)
 	}
 	if summary.Killed == 0 {
 		t.Error("expected at least 1 killed mutant")
@@ -119,7 +119,7 @@ func TestRun_EmptyPoints(t *testing.T) {
 	if summary.Total != 0 {
 		t.Errorf("expected 0 total, got %d", summary.Total)
 	}
-	if summary.Killed != 0 || summary.Survived != 0 || summary.Errors != 0 {
+	if summary.Killed != 0 || summary.TimedOut != 0 || summary.Survived != 0 || summary.Errors != 0 {
 		t.Error("expected all zero counts for empty input")
 	}
 }
