@@ -293,44 +293,6 @@ Comparisons with non-zero literals (e.g., `len(s) > 1`) are **not** skipped — 
 
 ---
 
-## CI Integration
-
-### GitHub Actions
-
-```yaml
-- uses: actions/setup-go@v5
-  with:
-    go-version-file: go.mod
-
-- name: Run mutation tests
-  run: |
-    go install github.com/fchimpan/mutest@latest
-    mutest ./...
-```
-
-Surviving mutants cause exit code `1`, failing the CI step automatically.
-
-Use `-threshold` to set a minimum kill rate instead of requiring 100%:
-
-```yaml
-- name: Run mutation tests (quality gate)
-  run: |
-    go install github.com/fchimpan/mutest@latest
-    mutest -threshold 80 ./...  # fail if kill rate < 80%
-```
-
-Use `-json` for structured output that integrates with other tools:
-
-```yaml
-- name: Run mutation tests (JSON)
-  run: |
-    go install github.com/fchimpan/mutest@latest
-    mutest -json ./... | tee mutation-report.json
-    # Parse with jq, upload as artifact, etc.
-```
-
----
-
 ## Architecture
 
 ```
