@@ -37,6 +37,7 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 
 - **Boundary-value mutations** — `>` ↔ `>=`, `<` ↔ `<=` (Tier 1)
 - **Equality mutations** — `==` ↔ `!=` (Tier 2)
+- **Runtime mutation selection** — Instruments all mutations into one binary per package; each mutation is activated via environment variable at runtime, eliminating per-mutation compilation
 - **Non-destructive** — Uses Go's `-overlay` flag; source files are never touched
 - **Parallel execution** — Worker pool bounded by CPU cores
 - **Skip directive** — `//mutest:skip` to exclude functions or lines from mutation
@@ -264,12 +265,12 @@ $ mutest -dry-run -json ./...
 
 1. **Parse** — `go/parser` builds an AST from every non-test `.go` file
 2. **Discover** — Walk the AST to find `ast.BinaryExpr` with `>`, `>=`, `<`, `<=`, `==`, `!=` (respecting `//mutest:skip`)
-3. **Mutate** — For each point, re-parse the file and swap the operator
-4. **Overlay** — Write the mutated source to a temp file; generate `overlay.json` mapping `original.go → mutated.go`
-5. **Test** — Run `go test -overlay=overlay.json ./...` in a parallel worker pool
+3. **Instrument** — Replace each mutation target with a generic helper function call (e.g., `a > b` → `_mutest_cmp_1(a, b)`) and generate a runtime file that switches behavior based on `MUTEST_ID`
+4. **Build** — Compile one test binary per package using Go's `-overlay` flag (source files are never touched)
+5. **Test** — Run the pre-built binary once per mutation with `MUTEST_ID=N`, in a parallel worker pool
 6. **Judge** — `exit 0` = survived (test gap), `exit != 0` = killed (caught)
 
-Go's [`-overlay` flag](https://pkg.go.dev/cmd/go#hdr-Compile_packages_and_dependencies) tells the compiler "use this file instead of that one" without touching disk. Each mutant gets its own overlay, its own `go test` process, and its own goroutine. **Original source files are never modified.**
+This **runtime mutation selection** approach compiles each package only once regardless of how many mutations it contains. Traditional per-mutation compilation (`N mutations × compile`) is replaced with `P packages × compile + N mutations × run`, dramatically reducing overhead. **Original source files are never modified.**
 
 ### Skipped Mutations
 
@@ -334,7 +335,8 @@ mutest/
 │   ├── comparison.go    # Tier 1: boundary comparison mutations (> >= < <=)
 │   └── equality.go      # Tier 2: equality mutations (== !=)
 ├── engine/
-│   └── engine.go        # AST traversal, overlay generation, //mutest:skip
+│   ├── engine.go        # AST traversal, overlay generation, //mutest:skip
+│   └── instrument.go    # Runtime mutation instrumentation & test binary compilation
 └── runner/
     └── runner.go        # Parallel test execution & result aggregation
 ```
