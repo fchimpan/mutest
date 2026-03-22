@@ -145,11 +145,9 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 	defer engine.CleanupInstrumented(pkgs)
 
 	fmt.Fprintf(info, "mutest: building test binaries...\n")
-	for _, pkg := range pkgs {
-		if err := eng.BuildTestBinary(context.Background(), pkg); err != nil {
-			fmt.Fprintf(stderr, "mutest: build error: %v\n", err)
-			return 2
-		}
+	if err := eng.BuildTestBinaries(context.Background(), pkgs); err != nil {
+		fmt.Fprintf(stderr, "mutest: build error: %v\n", err)
+		return 2
 	}
 
 	fmt.Fprintf(info, "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)

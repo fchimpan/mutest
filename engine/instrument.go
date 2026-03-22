@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/fchimpan/mutest/mutator"
 )
@@ -29,43 +31,36 @@ type InstrumentedPackage struct {
 // helperSpec describes a generated mutation helper function.
 type helperSpec struct {
 	ID       int
-	Kind     string // "cmp" (cmp.Ordered) or "eq" (comparable)
+	Kind     string // "cmp" (cmp.Ordered), "eq" (comparable), or "inline" (nil comparisons)
 	Original token.Token
 	Mutated  token.Token
 }
 
 // replacement describes a byte-range replacement in source code.
 type replacement struct {
-	start int // byte offset of expression start (bin.X.Pos)
-	end   int // byte offset of expression end (bin.Y.End)
+	start int
+	end   int
 	text  string
 }
 
 // InstrumentAll instruments all mutation points grouped by package.
-// Each package gets one overlay with all mutations embedded, ready for a single build.
+// It assigns MutestIDs directly into the points slice and returns
+// instrumented packages ready for a single build each.
 func (e *Engine) InstrumentAll(points []mutator.MutationPoint) (map[string]*InstrumentedPackage, error) {
-	// Group by import path.
-	byPkg := make(map[string][]mutator.MutationPoint)
+	// Group by import path, keeping original indices for direct ID assignment.
+	byPkg := make(map[string][]int) // importPath → indices into points
 	for i := range points {
-		byPkg[points[i].ImportPath] = append(byPkg[points[i].ImportPath], points[i])
+		byPkg[points[i].ImportPath] = append(byPkg[points[i].ImportPath], i)
 	}
 
 	result := make(map[string]*InstrumentedPackage, len(byPkg))
 
-	for importPath, pkgPoints := range byPkg {
-		// Assign MutestIDs (1-based).
-		for i := range pkgPoints {
-			pkgPoints[i].MutestID = i + 1
-		}
-		// Update the original points slice with assigned IDs.
-		for _, pp := range pkgPoints {
-			for i := range points {
-				if points[i].File == pp.File && points[i].Line == pp.Line &&
-					points[i].Column == pp.Column && points[i].MutatorName == pp.MutatorName {
-					points[i].MutestID = pp.MutestID
-					break
-				}
-			}
+	for importPath, indices := range byPkg {
+		// Assign MutestIDs (1-based) directly into the original slice.
+		pkgPoints := make([]mutator.MutationPoint, len(indices))
+		for rank, idx := range indices {
+			points[idx].MutestID = rank + 1
+			pkgPoints[rank] = points[idx]
 		}
 
 		pkg, err := e.instrumentPackage(importPath, pkgPoints)
@@ -79,7 +74,7 @@ func (e *Engine) InstrumentAll(points []mutator.MutationPoint) (map[string]*Inst
 }
 
 // instrumentPackage instruments a single package with all its mutations.
-func (e *Engine) instrumentPackage(importPath string, points []mutator.MutationPoint) (*InstrumentedPackage, error) {
+func (e *Engine) instrumentPackage(importPath string, points []mutator.MutationPoint) (_ *InstrumentedPackage, retErr error) {
 	// Group points by file.
 	byFile := make(map[string][]mutator.MutationPoint)
 	for _, p := range points {
@@ -90,9 +85,15 @@ func (e *Engine) instrumentPackage(importPath string, points []mutator.MutationP
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if retErr != nil {
+			os.RemoveAll(tempDir)
+		}
+	}()
 
 	overlayReplace := make(map[string]string)
 	var allHelpers []helperSpec
+	fileIdx := 0
 
 	for filePath, filePoints := range byFile {
 		src := e.sourceCache[filePath]
@@ -102,14 +103,13 @@ func (e *Engine) instrumentPackage(importPath string, points []mutator.MutationP
 
 		instrumented, helpers, err := instrumentFile(src, filePath, filePoints)
 		if err != nil {
-			os.RemoveAll(tempDir)
 			return nil, fmt.Errorf("instrument %s: %w", filePath, err)
 		}
 
-		// Write instrumented source to temp dir.
-		outPath := filepath.Join(tempDir, filepath.Base(filePath))
+		// Use sequential filenames to avoid filepath.Base collisions.
+		outPath := filepath.Join(tempDir, fmt.Sprintf("file%d.go", fileIdx))
+		fileIdx++
 		if err := os.WriteFile(outPath, instrumented, 0644); err != nil {
-			os.RemoveAll(tempDir)
 			return nil, err
 		}
 		overlayReplace[filePath] = outPath
@@ -117,29 +117,23 @@ func (e *Engine) instrumentPackage(importPath string, points []mutator.MutationP
 	}
 
 	// Write mutest_runtime.go to temp dir and add to overlay.
-	// Go's overlay supports adding new files by mapping a virtual path
-	// (that doesn't exist on disk) to a real file.
 	pkgName := points[0].Package
 	pkgDir := filepath.Dir(points[0].File)
 	runtimeSrc := generateRuntime(pkgName, allHelpers)
 	runtimeTempPath := filepath.Join(tempDir, "mutest_runtime.go")
 	if err := os.WriteFile(runtimeTempPath, runtimeSrc, 0644); err != nil {
-		os.RemoveAll(tempDir)
 		return nil, err
 	}
-	// Map the virtual path in the package directory to our temp file.
 	runtimeVirtualPath := filepath.Join(pkgDir, "mutest_runtime.go")
 	overlayReplace[runtimeVirtualPath] = runtimeTempPath
 
 	// Write overlay JSON.
 	overlayData, err := json.Marshal(Overlay{Replace: overlayReplace})
 	if err != nil {
-		os.RemoveAll(tempDir)
 		return nil, err
 	}
 	overlayPath := filepath.Join(tempDir, "overlay.json")
 	if err := os.WriteFile(overlayPath, overlayData, 0644); err != nil {
-		os.RemoveAll(tempDir)
 		return nil, err
 	}
 
@@ -151,6 +145,14 @@ func (e *Engine) instrumentPackage(importPath string, points []mutator.MutationP
 	}, nil
 }
 
+// nodeKey uniquely identifies a mutation point in the AST walk.
+// NodeID alone is insufficient because different mutators maintain
+// independent counters during Discover.
+type nodeKey struct {
+	nodeID int
+	op     token.Token // Original operator disambiguates between mutators
+}
+
 // instrumentFile replaces mutation target expressions with helper function calls.
 func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint) ([]byte, []helperSpec, error) {
 	fset := token.NewFileSet()
@@ -159,13 +161,13 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 		return nil, nil, err
 	}
 
-	// Build a map from NodeID to mutation point for quick lookup.
-	pointByNodeID := make(map[int]mutator.MutationPoint)
+	// Build a map keyed on (NodeID, Original) to handle multiple mutators
+	// that assign the same NodeID independently.
+	pointByKey := make(map[nodeKey]mutator.MutationPoint)
 	for _, p := range points {
-		pointByNodeID[p.NodeID] = p
+		pointByKey[nodeKey{p.NodeID, p.Original}] = p
 	}
 
-	// Walk AST to find BinaryExpr nodes and build replacements.
 	var repls []replacement
 	var helpers []helperSpec
 	nodeID := 0
@@ -176,15 +178,13 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 			return true
 		}
 
-		if pt, exists := pointByNodeID[nodeID]; exists {
+		key := nodeKey{nodeID, bin.Op}
+		if pt, exists := pointByKey[key]; exists {
 			xStart := fset.Position(bin.X.Pos()).Offset
 			yEnd := fset.Position(bin.Y.End()).Offset
-
 			lhs := string(src[fset.Position(bin.X.Pos()).Offset:fset.Position(bin.X.End()).Offset])
 			rhs := string(src[fset.Position(bin.Y.Pos()).Offset:fset.Position(bin.Y.End()).Offset])
 
-			// Check if either operand is nil - can't use generics for nil comparisons
-			// because function types and other non-comparable types may be involved.
 			isNilComparison := isNilIdent(bin.X) || isNilIdent(bin.Y)
 
 			kind := "cmp"
@@ -193,12 +193,9 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 			}
 
 			if isNilComparison {
-				// For nil comparisons, use inline conditional expression.
-				// func() bool { if _mutest_active == N { return X mutated_op Y }; return X original_op Y }()
-				callExpr := fmt.Sprintf("func() bool { if _mutest_active == %d { return %s %s %s }; return %s %s %s }()",
+				callExpr := fmt.Sprintf("func() bool { _mutest_init(); if _mutest_active == %d { return %s %s %s }; return %s %s %s }()",
 					pt.MutestID, lhs, pt.Mutated.String(), rhs, lhs, pt.Original.String(), rhs)
 				repls = append(repls, replacement{start: xStart, end: yEnd, text: callExpr})
-				// No helper needed, but still count it as a mutation with inline kind.
 				helpers = append(helpers, helperSpec{ID: pt.MutestID, Kind: "inline", Original: pt.Original, Mutated: pt.Mutated})
 			} else {
 				funcName := fmt.Sprintf("_mutest_%s_%d", kind, pt.MutestID)
@@ -217,13 +214,20 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 		return repls[i].start > repls[j].start
 	})
 
-	result := make([]byte, len(src))
-	copy(result, src)
-	for _, r := range repls {
-		result = append(result[:r.start], append([]byte(r.text), result[r.end:]...)...)
+	// Build result in a single forward pass to avoid O(n²) append aliasing.
+	// Iterate repls in forward order (ascending start offset).
+	var buf bytes.Buffer
+	buf.Grow(len(src) * 2)
+	pos := 0
+	for i := len(repls) - 1; i >= 0; i-- {
+		r := repls[i]
+		buf.Write(src[pos:r.start])
+		buf.WriteString(r.text)
+		pos = r.end
 	}
+	buf.Write(src[pos:])
 
-	return result, helpers, nil
+	return buf.Bytes(), helpers, nil
 }
 
 // isNilIdent returns true if the expression is the identifier "nil".
@@ -238,7 +242,6 @@ func generateRuntime(pkg string, helpers []helperSpec) []byte {
 
 	b.WriteString("package " + pkg + "\n\n")
 
-	// Determine imports.
 	needsCmp := false
 	for _, h := range helpers {
 		if h.Kind == "cmp" {
@@ -253,17 +256,23 @@ func generateRuntime(pkg string, helpers []helperSpec) []byte {
 	}
 	b.WriteString("\t\"os\"\n")
 	b.WriteString("\t\"strconv\"\n")
+	b.WriteString("\t\"sync\"\n")
 	b.WriteString(")\n\n")
 
-	// Active mutation variable and init.
-	b.WriteString("var _mutest_active int\n\n")
-	b.WriteString("func init() {\n")
-	b.WriteString("\tif s := os.Getenv(\"MUTEST_ID\"); s != \"\" {\n")
-	b.WriteString("\t\t_mutest_active, _ = strconv.Atoi(s)\n")
-	b.WriteString("\t}\n")
+	// Use sync.Once to ensure _mutest_active is initialized before first use,
+	// regardless of init() execution order across files.
+	b.WriteString("var (\n")
+	b.WriteString("\t_mutest_active int\n")
+	b.WriteString("\t_mutest_once   sync.Once\n")
+	b.WriteString(")\n\n")
+	b.WriteString("func _mutest_init() {\n")
+	b.WriteString("\t_mutest_once.Do(func() {\n")
+	b.WriteString("\t\tif s := os.Getenv(\"MUTEST_ID\"); s != \"\" {\n")
+	b.WriteString("\t\t\t_mutest_active, _ = strconv.Atoi(s)\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t})\n")
 	b.WriteString("}\n")
 
-	// Generate helper functions (skip inline mutations which are expanded in-place).
 	for _, h := range helpers {
 		if h.Kind == "inline" {
 			continue
@@ -274,6 +283,7 @@ func generateRuntime(pkg string, helpers []helperSpec) []byte {
 		} else {
 			fmt.Fprintf(&b, "func _mutest_eq_%d[T comparable](a, b T) bool {\n", h.ID)
 		}
+		b.WriteString("\t_mutest_init()\n")
 		fmt.Fprintf(&b, "\tif _mutest_active == %d {\n", h.ID)
 		fmt.Fprintf(&b, "\t\treturn a %s b\n", h.Mutated.String())
 		b.WriteString("\t}\n")
@@ -295,6 +305,29 @@ func (e *Engine) BuildTestBinary(ctx context.Context, pkg *InstrumentedPackage) 
 	}
 	pkg.BinaryPath = binPath
 	return nil
+}
+
+// BuildTestBinaries builds test binaries for all packages in parallel.
+func (e *Engine) BuildTestBinaries(ctx context.Context, pkgs map[string]*InstrumentedPackage) error {
+	var mu sync.Mutex
+	var firstErr error
+	var wg sync.WaitGroup
+
+	for _, pkg := range pkgs {
+		wg.Add(1)
+		go func(p *InstrumentedPackage) {
+			defer wg.Done()
+			if err := e.BuildTestBinary(ctx, p); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}(pkg)
+	}
+	wg.Wait()
+	return firstErr
 }
 
 // CleanupInstrumented removes temp directories for all instrumented packages.
