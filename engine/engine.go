@@ -3,7 +3,6 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 
 	"github.com/fchimpan/mutest/mutator"
 )
@@ -19,13 +17,6 @@ import (
 // Overlay represents the Go overlay JSON structure used by -overlay flag.
 type Overlay struct {
 	Replace map[string]string `json:"Replace"`
-}
-
-// Mutant is a fully prepared mutation ready for testing.
-type Mutant struct {
-	Point       mutator.MutationPoint
-	OverlayPath string // path to the overlay.json temp file
-	TempDir     string // directory containing overlay.json and mutated file
 }
 
 // goPackage represents a subset of `go list -json` output.
@@ -41,24 +32,16 @@ type Engine struct {
 	patterns    []string           // package patterns (e.g. "./...", "./pkg/calc")
 	sourceCache map[string][]byte  // file path → source bytes
 	importPaths map[string]string  // file path → import path
-	mutatorMap  map[string]mutator.Mutator // name → mutator (for fast lookup)
-	baseDir     string             // shared temp directory for all mutants
-	counter     atomic.Int64       // monotonic counter for unique sub-directory names
 }
 
 // New creates an Engine for the given package patterns with the given mutators.
 // patterns are Go package patterns like "./...", "./pkg/...".
 func New(patterns []string, mutators ...mutator.Mutator) *Engine {
-	mm := make(map[string]mutator.Mutator, len(mutators))
-	for _, m := range mutators {
-		mm[m.Name()] = m
-	}
 	return &Engine{
 		mutators:    mutators,
 		patterns:    patterns,
 		sourceCache: make(map[string][]byte),
 		importPaths: make(map[string]string),
-		mutatorMap:  mm,
 	}
 }
 
@@ -127,120 +110,6 @@ func (e *Engine) resolveFiles() ([]string, error) {
 		}
 	}
 	return files, nil
-}
-
-// InitTempDir creates a shared temporary directory for all mutants.
-// Must be called before Prepare. Call CleanupAll when done.
-func (e *Engine) InitTempDir() error {
-	dir, err := os.MkdirTemp("", "mutest-*")
-	if err != nil {
-		return err
-	}
-	e.baseDir = dir
-	return nil
-}
-
-// CleanupAll removes the shared temporary directory.
-func (e *Engine) CleanupAll() {
-	if e.baseDir != "" {
-		os.RemoveAll(e.baseDir)
-	}
-}
-
-// lineColToOffset converts 1-based line and column to a byte offset in src.
-func lineColToOffset(src []byte, line, col int) int {
-	currentLine := 1
-	for i, b := range src {
-		if currentLine == line {
-			return i + col - 1
-		}
-		if b == '\n' {
-			currentLine++
-		}
-	}
-	return -1
-}
-
-func (e *Engine) Prepare(point mutator.MutationPoint) (_ *Mutant, retErr error) {
-	if e.mutatorMap[point.MutatorName] == nil {
-		return nil, fmt.Errorf("unknown mutator: %q", point.MutatorName)
-	}
-
-	src := e.sourceCache[point.File]
-	if src == nil {
-		return nil, fmt.Errorf("source not cached for %s", point.File)
-	}
-
-	// Direct byte rewrite: replace the original operator with the mutated one.
-	origStr := point.Original.String()
-	mutStr := point.Mutated.String()
-	offset := lineColToOffset(src, point.Line, point.Column)
-	if offset < 0 || offset+len(origStr) > len(src) {
-		return nil, fmt.Errorf("invalid offset for %s:%d:%d", point.File, point.Line, point.Column)
-	}
-
-	// Verify the original token is at the expected position.
-	if string(src[offset:offset+len(origStr)]) != origStr {
-		return nil, fmt.Errorf("expected %q at offset %d, got %q", origStr, offset, string(src[offset:offset+len(origStr)]))
-	}
-
-	// Build mutated source by splicing in the new operator.
-	mutated := make([]byte, 0, len(src)-len(origStr)+len(mutStr))
-	mutated = append(mutated, src[:offset]...)
-	mutated = append(mutated, mutStr...)
-	mutated = append(mutated, src[offset+len(origStr):]...)
-
-	var tempDir string
-	if e.baseDir != "" {
-		// Use sub-directory under the shared base dir to avoid MkdirTemp overhead.
-		subDir := fmt.Sprintf("m%d", e.counter.Add(1))
-		tempDir = filepath.Join(e.baseDir, subDir)
-		if err := os.MkdirAll(tempDir, 0755); err != nil {
-			return nil, err
-		}
-	} else {
-		var err error
-		tempDir, err = os.MkdirTemp("", "mutest-*")
-		if err != nil {
-			return nil, err
-		}
-	}
-	defer func() {
-		if retErr != nil {
-			os.RemoveAll(tempDir)
-		}
-	}()
-
-	mutatedPath := filepath.Join(tempDir, "mutated.go")
-	if err := os.WriteFile(mutatedPath, mutated, 0644); err != nil {
-		return nil, err
-	}
-
-	overlayData, err := json.Marshal(Overlay{Replace: map[string]string{point.File: mutatedPath}})
-	if err != nil {
-		return nil, err
-	}
-
-	overlayPath := filepath.Join(tempDir, "overlay.json")
-	if err := os.WriteFile(overlayPath, overlayData, 0644); err != nil {
-		return nil, err
-	}
-
-	return &Mutant{
-		Point:       point,
-		OverlayPath: overlayPath,
-		TempDir:     tempDir,
-	}, nil
-}
-
-// Cleanup removes the temp directory for a mutant.
-// When a shared base directory is used (InitTempDir was called), individual
-// cleanup is skipped and deferred to CleanupAll for better performance.
-func (e *Engine) Cleanup(m *Mutant) {
-	if e.baseDir != "" {
-		return // deferred to CleanupAll
-	}
-	os.RemoveAll(m.TempDir)
 }
 
 // --- //mutest:skip directive support ---
