@@ -26,7 +26,7 @@ type goPackage struct {
 	GoFiles    []string `json:"GoFiles"`
 }
 
-// Engine scans packages, discovers mutations, and prepares overlays.
+// Engine scans packages, discovers mutations, and instruments packages for testing.
 type Engine struct {
 	mutators    []mutator.Mutator
 	patterns    []string           // package patterns (e.g. "./...", "./pkg/calc")

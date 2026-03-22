@@ -35,10 +35,9 @@ type Summary struct {
 
 // Config controls runner behavior.
 type Config struct {
-	Workers  int
-	Timeout  time.Duration
-	Patterns []string // package patterns passed to go test (e.g. "./...", "./pkg/calc")
-	Run      string   // -run regex passed to go test
+	Workers int
+	Timeout time.Duration
+	Run     string // -run regex passed to go test
 }
 
 // ProgressFunc is called after each mutant is tested. It may be nil.

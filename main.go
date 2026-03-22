@@ -178,10 +178,9 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 	fmt.Fprintf(info, "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
 
 	runCfg := runner.Config{
-		Workers:  cfg.Workers,
-		Timeout:  cfg.Timeout,
-		Patterns: cfg.Patterns,
-		Run:      cfg.Run,
+		Workers: cfg.Workers,
+		Timeout: cfg.Timeout,
+		Run:     cfg.Run,
 	}
 
 	var progress runner.ProgressFunc
