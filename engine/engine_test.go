@@ -199,4 +199,3 @@ func Skipped(a, b int) bool {
 		t.Errorf("expected 0 points (function with space variant skipped), got %d", len(points))
 	}
 }
-

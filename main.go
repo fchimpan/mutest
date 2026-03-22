@@ -8,10 +8,10 @@ import (
 	"io"
 	"math"
 	"os"
-	"strings"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/fchimpan/mutest/engine"
@@ -52,14 +52,14 @@ func init() {
 }
 
 type config struct {
-	Patterns        []string
-	Workers         int
-	Timeout         time.Duration
-	Verbose         bool
-	Run             string
-	JSON            bool
-	DryRun          bool
-	Threshold       float64
+	Patterns           []string
+	Workers            int
+	Timeout            time.Duration
+	Verbose            bool
+	Run                string
+	JSON               bool
+	DryRun             bool
+	Threshold          float64
 	SkipErrPropagation bool
 }
 
@@ -90,14 +90,14 @@ func main() {
 	}
 
 	cfg := config{
-		Patterns:  patterns,
-		Workers:   *workers,
-		Timeout:   *timeout,
-		Verbose:   *verbose,
-		Run:       *run,
-		JSON:      *jsonOutput,
-		DryRun:    *dryRun,
-		Threshold:       *threshold,
+		Patterns:           patterns,
+		Workers:            *workers,
+		Timeout:            *timeout,
+		Verbose:            *verbose,
+		Run:                *run,
+		JSON:               *jsonOutput,
+		DryRun:             *dryRun,
+		Threshold:          *threshold,
 		SkipErrPropagation: *skipErrPropagation,
 	}
 

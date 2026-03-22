@@ -702,8 +702,8 @@ func TestValidateConfig_InvalidThreshold(t *testing.T) {
 func TestRun_EqualityMutator_Discovered(t *testing.T) {
 	tmpDir := t.TempDir()
 	for name, content := range map[string]string{
-		"go.mod":   "module example.com/eq\n\ngo 1.21\n",
-		"eq.go":    "package eq\n\nfunc Equal(a, b int) bool { return a == b }\n",
+		"go.mod":     "module example.com/eq\n\ngo 1.21\n",
+		"eq.go":      "package eq\n\nfunc Equal(a, b int) bool { return a == b }\n",
 		"eq_test.go": "package eq\n\nimport \"testing\"\n\nfunc TestEqual(t *testing.T) { if !Equal(3,3) { t.Fail() }; if Equal(3,4) { t.Fail() } }\n",
 	} {
 		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {

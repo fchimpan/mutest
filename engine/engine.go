@@ -29,9 +29,9 @@ type goPackage struct {
 // Engine scans packages, discovers mutations, and instruments packages for testing.
 type Engine struct {
 	mutators    []mutator.Mutator
-	patterns    []string           // package patterns (e.g. "./...", "./pkg/calc")
-	sourceCache map[string][]byte  // file path → source bytes
-	importPaths map[string]string  // file path → import path
+	patterns    []string          // package patterns (e.g. "./...", "./pkg/calc")
+	sourceCache map[string][]byte // file path → source bytes
+	importPaths map[string]string // file path → import path
 }
 
 // New creates an Engine for the given package patterns with the given mutators.
