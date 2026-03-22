@@ -37,9 +37,10 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 
 - **Boundary-value mutations** — `>` ↔ `>=`, `<` ↔ `<=` (Tier 1)
 - **Equality mutations** — `==` ↔ `!=` (Tier 2)
-- **Runtime mutation selection** — Instruments all mutations into one binary per package; each mutation is activated via environment variable at runtime, eliminating per-mutation compilation
-- **Non-destructive** — Uses Go's `-overlay` flag; source files are never touched
+- **Runtime instrumentation** — All mutations per package compiled into a single test binary; each mutant activated via `MUTEST_ID` env var at runtime, avoiding per-mutant recompilation
+- **Non-destructive** — Source files are never modified; mutations are injected into generated code
 - **Parallel execution** — Worker pool bounded by CPU cores
+- **go test-style output** — `--- KILLED:` / `--- SURVIVED:` progress by default; `-v` shows test output like `go test -v`
 - **Skip directive** — `//mutest:skip` to exclude functions or lines from mutation
 - **Threshold gate** — `-threshold` flag for CI quality gates
 - **False positive reduction** — Automatically skips `len(x) > 0` and similar no-op mutations
@@ -269,7 +270,7 @@ $ mutest -dry-run -json ./...
 1. **Parse** — `go/parser` builds an AST from every non-test `.go` file
 2. **Discover** — Walk the AST to find `ast.BinaryExpr` with `>`, `>=`, `<`, `<=`, `==`, `!=` (respecting `//mutest:skip`)
 3. **Instrument** — Replace each mutation target with a generic helper function call (e.g., `a > b` → `_mutest_cmp_1(a, b)`) and generate a runtime file that switches behavior based on `MUTEST_ID`
-4. **Build** — Compile one test binary per package using Go's `-overlay` flag (source files are never touched)
+4. **Build** — Compile one test binary per package with all mutations embedded
 5. **Test** — Run the pre-built binary once per mutation with `MUTEST_ID=N`, in a parallel worker pool
 6. **Judge** — `exit 0` = survived (test gap), `exit != 0` = killed (caught)
 
