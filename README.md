@@ -309,20 +309,6 @@ mutest/
     └── runner.go        # Parallel test execution & result aggregation
 ```
 
-### Extending mutest
-
-Adding a new mutation operator requires only one file. Implement the `Mutator` interface:
-
-```go
-type Mutator interface {
-    Name() string
-    Discover(fset *token.FileSet, file *ast.File, filePath, pkg string) []MutationPoint
-    Apply(file *ast.File, point MutationPoint)
-}
-```
-
-Register it in `main.go`. No changes to engine or runner.
-
 ---
 
 ## Contributing
