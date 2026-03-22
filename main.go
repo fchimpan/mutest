@@ -134,8 +134,24 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		info = stderr
 	}
 	fmt.Fprintf(info, "mutest: discovered %d mutation points\n", len(points))
-	fmt.Fprintf(info, "mutest: warming build cache...\n")
-	runner.WarmBuildCache(context.Background(), points)
+
+	// Instrument all packages and build test binaries.
+	fmt.Fprintf(info, "mutest: instrumenting packages...\n")
+	pkgs, err := eng.InstrumentAll(points)
+	if err != nil {
+		fmt.Fprintf(stderr, "mutest: instrumentation error: %v\n", err)
+		return 2
+	}
+	defer engine.CleanupInstrumented(pkgs)
+
+	fmt.Fprintf(info, "mutest: building test binaries...\n")
+	for _, pkg := range pkgs {
+		if err := eng.BuildTestBinary(context.Background(), pkg); err != nil {
+			fmt.Fprintf(stderr, "mutest: build error: %v\n", err)
+			return 2
+		}
+	}
+
 	fmt.Fprintf(info, "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
 
 	runCfg := runner.Config{
@@ -148,7 +164,6 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 	var progress runner.ProgressFunc
 	if cfg.Verbose {
 		if cfg.JSON {
-			// NDJSON streaming: one JSON object per line, reuse a single encoder.
 			enc := newJSONEncoder(stdout)
 			progress = func(r runner.Result, done, total int) {
 				enc.Encode(toJSONResult(r, rpc))
@@ -167,7 +182,7 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		}
 	}
 
-	summary := runner.Run(context.Background(), eng, points, runCfg, progress)
+	summary := runner.RunInstrumented(context.Background(), pkgs, runCfg, progress)
 
 	if cfg.JSON {
 		// When verbose, results were already streamed as NDJSON;

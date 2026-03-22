@@ -17,6 +17,7 @@ type MutationPoint struct {
 	NodeID      int         // index to identify the BinaryExpr in AST walk order
 	Desc        string      // human-readable description, e.g. "> to >="
 	MutatorName string      // name of the mutator that discovered this point
+	MutestID    int         // runtime mutation ID (1-based, per-package), assigned during instrumentation
 }
 
 // Mutator discovers mutation opportunities and applies them to AST nodes.
