@@ -137,12 +137,6 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if err := eng.InitTempDir(); err != nil {
-		fmt.Fprintf(stderr, "mutest: error creating temp directory: %v\n", err)
-		return 2
-	}
-	defer eng.CleanupAll()
-
 	cwd, _ := os.Getwd()
 	rpc := newRelPathCache(cwd)
 
@@ -189,10 +183,9 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 	fmt.Fprintf(info, "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
 
 	runCfg := runner.Config{
-		Workers:  cfg.Workers,
-		Timeout:  cfg.Timeout,
-		Patterns: cfg.Patterns,
-		Run:      cfg.Run,
+		Workers: cfg.Workers,
+		Timeout: cfg.Timeout,
+		Run:     cfg.Run,
 	}
 
 	var progress runner.ProgressFunc
