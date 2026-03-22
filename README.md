@@ -9,9 +9,9 @@
 mutest targets boundary-value comparison operators (`>`, `>=`, `<`, `<=`) and equality operators (`==`, `!=`) — the #1 source of off-by-one and equality errors. It runs in seconds, not minutes. Zero dependencies. Pure Go standard library.
 
 ```
-$ mutest -v ./...
-[KILLED  ] calc.go:13:11  > to >=   (632ms)
-[SURVIVED] calc.go:5:7    > to >=   (207ms)   ← test gap found!
+$ mutest ./...
+--- KILLED: calc.go:13:11  > to >= (0.63s)
+--- SURVIVED: calc.go:5:7  > to >= (0.21s)   ← test gap found!
 
 Killed: 1 (25.0%)  Survived: 3  Duration: 633ms
 ```
@@ -67,11 +67,14 @@ Pre-built binaries for Linux, macOS, and Windows are available on the [Releases]
 # Run against all packages (like go test ./...)
 mutest ./...
 
-# Target a specific package with verbose output
+# Target a specific package
+mutest ./pkg/calc
+
+# Show test output for each mutant (like go test -v)
 mutest -v ./pkg/calc
 
 # Only run tests matching a regex (like go test -run)
-mutest -v -run TestBoundary ./...
+mutest -run TestBoundary ./...
 
 # Tune parallelism and timeout
 mutest -workers 4 -timeout 60s ./...
@@ -91,14 +94,14 @@ mutest -json ./...
 ## Example Output
 
 ```
-$ mutest -v ./...
+$ mutest ./...
 mutest: discovered 4 mutation points
 mutest: testing with 10 workers, 30s timeout per mutant
 
-[SURVIVED] calc.go:5:7    > to >=   (207ms)
-[SURVIVED] calc.go:21:7   > to >=   (211ms)
-[SURVIVED] calc.go:18:7   < to <=   (211ms)
-[KILLED  ] calc.go:13:11  > to >=   (632ms)
+--- SURVIVED: calc.go:5:7  > to >= (0.21s)
+--- SURVIVED: calc.go:21:7  > to >= (0.21s)
+--- SURVIVED: calc.go:18:7  < to <= (0.21s)
+--- KILLED: calc.go:13:11  > to >= (0.63s)
 
 ===== Mutation Testing Summary =====
 Total:     4
@@ -127,7 +130,7 @@ Survived mutants (test gaps):
 When mutest reports a survivor like this:
 
 ```
-[SURVIVED] calc.go:5:7  > to >=
+--- SURVIVED: calc.go:5:7  > to >= (0.21s)
 ```
 
 It means mutest swapped the operator and **no test noticed**:
@@ -154,7 +157,7 @@ func TestMax_EqualValues(t *testing.T) {
 }
 ```
 
-Re-run mutest and that mutation point will now show `[KILLED]`.
+Re-run mutest and that mutation point will now show `--- KILLED:`.
 
 ### Exit Codes
 
@@ -176,7 +179,7 @@ Positional arguments are package patterns (default: `./...`), following the same
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-v` | `false` | Print details for each mutant |
+| `-v` | `false` | Show test output for each mutant |
 | `-json` | `false` | Emit results as JSON (NDJSON when combined with `-v`) |
 | `-dry-run` | `false` | Discover mutations without running tests |
 | `-run` | | Regexp to pass to `go test -run` |
@@ -299,7 +302,7 @@ Comparisons with non-zero literals (e.g., `len(s) > 1`) are **not** skipped — 
 - name: Run mutation tests
   run: |
     go install github.com/fchimpan/mutest@latest
-    mutest -v ./...
+    mutest ./...
 ```
 
 Surviving mutants cause exit code `1`, failing the CI step automatically.
@@ -380,7 +383,7 @@ Contributions are welcome! Please open an issue first to discuss what you'd like
 git clone https://github.com/fchimpan/mutest.git
 cd mutest
 go test ./...                         # run tests
-cd testdata/project && go run ../.. -v ./...  # try it out
+cd testdata/project && go run ../.. ./...  # try it out
 ```
 
 ## License
