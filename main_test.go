@@ -173,8 +173,8 @@ func TestPrintReport_AllKilled(t *testing.T) {
 	printReport(&buf, summary, newRelPathCache("/base"))
 	output := buf.String()
 
-	if !strings.Contains(output, "100.0%") {
-		t.Errorf("expected 100.0%% kill rate, got: %s", output)
+	if !strings.Contains(output, "Score:     100.0%") {
+		t.Errorf("expected Score: 100.0%%, got: %s", output)
 	}
 	if strings.Contains(output, "Survived mutants") {
 		t.Error("should not list survived mutants when all are killed")
@@ -212,8 +212,8 @@ func TestPrintReport_AllErrors(t *testing.T) {
 	printReport(&buf, summary, newRelPathCache("/base"))
 	output := buf.String()
 
-	if !strings.Contains(output, "0.0%") {
-		t.Errorf("expected 0.0%% kill rate, got: %s", output)
+	if !strings.Contains(output, "Score:     0.0%") {
+		t.Errorf("expected Score: 0.0%%, got: %s", output)
 	}
 }
 
@@ -598,13 +598,13 @@ func TestToJSONResult(t *testing.T) {
 	t.Run("timed_out", func(t *testing.T) {
 		r := runner.Result{
 			Point:    mutator.MutationPoint{File: "/work/timeout.go"},
-			Killed:   true,
+			Killed:   false,
 			TimedOut: true,
 			Duration: 30 * time.Second,
 		}
 		jr := toJSONResult(r, rpc)
-		if jr.Status != "killed" {
-			t.Errorf("expected status killed, got %s", jr.Status)
+		if jr.Status != "timeout" {
+			t.Errorf("expected status timeout, got %s", jr.Status)
 		}
 		if !jr.TimedOut {
 			t.Error("expected timed_out to be true")
@@ -749,6 +749,9 @@ func TestCalcKillRate(t *testing.T) {
 		{"with errors", &runner.Summary{Total: 5, Killed: 2, Survived: 1, Errors: 2}, float64(2) / float64(3) * 100},
 		{"all errors", &runner.Summary{Total: 2, Errors: 2}, 0.0},
 		{"empty", &runner.Summary{}, 0.0},
+		{"with timeout", &runner.Summary{Total: 5, Killed: 2, TimedOut: 1, Survived: 2}, float64(3) / float64(5) * 100},
+		{"timeout and errors", &runner.Summary{Total: 6, Killed: 2, TimedOut: 1, Survived: 1, Errors: 2}, float64(3) / float64(4) * 100},
+		{"all timeout", &runner.Summary{Total: 3, TimedOut: 3}, 100.0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

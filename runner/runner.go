@@ -30,6 +30,7 @@ type Result struct {
 type Summary struct {
 	Total    int
 	Killed   int
+	TimedOut int
 	Survived int
 	Errors   int
 	Duration time.Duration
@@ -111,6 +112,8 @@ func Run(ctx context.Context, eng *engine.Engine, points []mutator.MutationPoint
 		switch {
 		case r.Err != nil:
 			summary.Errors++
+		case r.TimedOut:
+			summary.TimedOut++
 		case r.Killed:
 			summary.Killed++
 		default:
@@ -171,6 +174,8 @@ func RunInstrumented(ctx context.Context, pkgs map[string]*engine.InstrumentedPa
 		switch {
 		case r.Err != nil:
 			summary.Errors++
+		case r.TimedOut:
+			summary.TimedOut++
 		case r.Killed:
 			summary.Killed++
 		default:
@@ -197,7 +202,7 @@ func testMutantRuntime(ctx context.Context, pkg *engine.InstrumentedPackage, pt 
 
 	timedOut := testCtx.Err() == context.DeadlineExceeded
 	killed := false
-	if err != nil || timedOut {
+	if err != nil && !timedOut {
 		killed = true
 	}
 
@@ -239,7 +244,7 @@ func testMutant(ctx context.Context, eng *engine.Engine, pt mutator.MutationPoin
 
 	timedOut := testCtx.Err() == context.DeadlineExceeded
 	killed := false
-	if err != nil || timedOut {
+	if err != nil && !timedOut {
 		killed = true
 	}
 
