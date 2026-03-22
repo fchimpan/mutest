@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -39,7 +40,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	workers := flag.Int("workers", runtime.NumCPU(), "max parallel test processes")
 	timeout := flag.Duration("timeout", 30*time.Second, "per-mutant test timeout")
-	verbose := flag.Bool("v", false, "print details for each mutant")
+	verbose := flag.Bool("v", false, "show test output for each mutant")
 	run := flag.String("run", "", "regexp to pass to go test -run")
 	jsonOutput := flag.Bool("json", false, "emit results as JSON")
 	dryRun := flag.Bool("dry-run", false, "discover mutations without running tests")
@@ -160,22 +161,27 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 	}
 
 	var progress runner.ProgressFunc
-	if cfg.Verbose {
-		if cfg.JSON {
+	if cfg.JSON {
+		if cfg.Verbose {
 			enc := newJSONEncoder(stdout)
 			progress = func(r runner.Result, done, total int) {
 				enc.Encode(toJSONResult(r, rpc))
 			}
-		} else {
-			progress = func(r runner.Result, done, total int) {
-				status := "SURVIVED"
-				if r.Err != nil {
-					status = "ERROR"
-				} else if r.Killed {
-					status = "KILLED"
+		}
+	} else {
+		progress = func(r runner.Result, done, total int) {
+			status := "KILLED"
+			if r.Err != nil {
+				status = "ERROR"
+			} else if !r.Killed {
+				status = "SURVIVED"
+			}
+			fmt.Fprintf(stdout, "--- %s: %s:%d:%d  %s (%s)\n",
+				status, rpc.get(r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc, fmtSeconds(r.Duration))
+			if cfg.Verbose && r.Output != "" {
+				for _, line := range strings.Split(strings.TrimRight(r.Output, "\n"), "\n") {
+					fmt.Fprintf(stdout, "        %s\n", line)
 				}
-				fmt.Fprintf(stdout, "[%-8s] %s:%d:%d  %s  (%s)\n",
-					status, rpc.get(r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc, r.Duration.Round(time.Millisecond))
 			}
 		}
 	}
@@ -374,6 +380,10 @@ func newJSONEncoder(w io.Writer) *json.Encoder {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	return enc
+}
+
+func fmtSeconds(d time.Duration) string {
+	return fmt.Sprintf("%.2fs", d.Seconds())
 }
 
 func calcKillRate(s *runner.Summary) float64 {

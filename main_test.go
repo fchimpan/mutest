@@ -48,8 +48,8 @@ func TestRun_WithTestProject(t *testing.T) {
 	if !strings.Contains(output, "Mutation Testing Summary") {
 		t.Error("output should contain summary header")
 	}
-	if !strings.Contains(output, "[KILLED") && !strings.Contains(output, "[SURVIVED") {
-		t.Error("verbose output should contain [KILLED] or [SURVIVED] markers")
+	if !strings.Contains(output, "--- KILLED:") && !strings.Contains(output, "--- SURVIVED:") {
+		t.Error("output should contain --- KILLED: or --- SURVIVED: markers")
 	}
 	if !strings.Contains(output, "Survived mutants (test gaps):") {
 		t.Error("output should list survived mutants")
@@ -126,11 +126,38 @@ func TestRun_NonVerbose(t *testing.T) {
 	if code != 1 {
 		t.Errorf("expected exit code 1, got %d", code)
 	}
-	if strings.Contains(output, "[KILLED") || strings.Contains(output, "[SURVIVED") {
-		t.Error("non-verbose output should not contain per-mutant markers")
+	// Default mode now shows per-mutant progress
+	if !strings.Contains(output, "--- KILLED:") && !strings.Contains(output, "--- SURVIVED:") {
+		t.Error("default output should contain --- KILLED: or --- SURVIVED: markers")
 	}
 	if !strings.Contains(output, "Mutation Testing Summary") {
 		t.Error("output should contain summary")
+	}
+}
+
+func TestRun_Verbose_ShowsTestOutput(t *testing.T) {
+	chdir(t, "testdata/project")
+
+	var stdout, stderr bytes.Buffer
+	cfg := config{
+		Patterns: []string{"./..."},
+		Workers:  2,
+		Timeout:  30 * time.Second,
+		Verbose:  true,
+	}
+
+	code := run2(cfg, &stdout, &stderr)
+	output := stdout.String()
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(output, "--- KILLED:") && !strings.Contains(output, "--- SURVIVED:") {
+		t.Error("verbose output should contain --- KILLED: or --- SURVIVED: markers")
+	}
+	// Verbose mode should include indented test output from killed mutants
+	if !strings.Contains(output, "        ") {
+		t.Error("verbose output should contain indented test output lines")
 	}
 }
 
