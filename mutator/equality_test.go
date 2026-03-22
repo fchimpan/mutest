@@ -119,6 +119,94 @@ func TestEqualityMutator_Apply(t *testing.T) {
 	}
 }
 
+func TestEqualityMutator_Discover_SkipsSimpleErrPropagation(t *testing.T) {
+	src := `package example
+
+import "fmt"
+
+func g() (int, error) {
+	var err error
+	// SKIP: simple return err
+	if err != nil { return 0, err }
+	// SKIP: wrapped error return
+	if err != nil { return 0, fmt.Errorf("wrap: %w", err) }
+	// SKIP: init form
+	if err = doSomething(); err != nil { return 0, err }
+	// KEEP: compound condition (Cond is &&, not err != nil)
+	var timedOut bool
+	if err != nil && !timedOut { return 0, err }
+	// KEEP: assignment body, not return
+	var rel string
+	if err != nil { rel = "fallback" }
+	// KEEP: multiple statements
+	if err != nil { _ = rel; return 0, err }
+	// KEEP: has else branch
+	if err != nil { return 0, err } else { _ = rel }
+	// KEEP: not "err" identifier
+	var myErr error
+	if myErr != nil { return 0, myErr }
+	return 0, nil
+}
+func doSomething() error { return nil }
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := &EqualityMutator{SkipErrPropagation: true}
+	points := m.Discover(fset, file, "/fake/test.go", "example")
+
+	// Skipped (3): simple return, wrapped return, init form
+	// Kept (5): compound condition (2 ops: != and ==), assignment, multi-stmt, else, myErr
+	// compound condition "err != nil && !timedOut" has 1 equality op: err != nil
+	// The && is not in equalitySwapTable so it's not counted.
+	// Total kept: err!=nil(compound) + err!=nil(assign) + err!=nil(multi) + err!=nil(else) + myErr!=nil = 5
+	if len(points) != 5 {
+		t.Errorf("expected 5 mutation points (skipping simple err propagation), got %d", len(points))
+		for i, p := range points {
+			t.Logf("  point[%d]: line %d col %d %s", i, p.Line, p.Column, p.Desc)
+		}
+	}
+}
+
+func TestEqualityMutator_Discover_SkipErrPropagationFlag(t *testing.T) {
+	src := `package example
+
+func h() error {
+	var err error
+	if err != nil { return err }
+	if err != nil { return err }
+	return nil
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "test.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// SkipErrPropagation=true: skips simple err propagation
+	m := &EqualityMutator{SkipErrPropagation: true}
+	points := m.Discover(fset, file, "/fake/test.go", "example")
+	if len(points) != 0 {
+		t.Errorf("SkipErrPropagation=true: expected 0 points, got %d", len(points))
+	}
+
+	// SkipErrPropagation=false: includes all
+	fset2 := token.NewFileSet()
+	file2, err := parser.ParseFile(fset2, "test.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2 := &EqualityMutator{SkipErrPropagation: false}
+	points2 := m2.Discover(fset2, file2, "/fake/test.go", "example")
+	if len(points2) != 2 {
+		t.Errorf("SkipErrPropagation=false: expected 2 points, got %d", len(points2))
+	}
+}
+
 func TestEqualityMutator_Apply_EachPoint(t *testing.T) {
 	m := &EqualityMutator{}
 
