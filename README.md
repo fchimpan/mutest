@@ -4,29 +4,27 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/fchimpan/mutest)](https://goreportcard.com/report/github.com/fchimpan/mutest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Mutation testing for Go that finishes before your coffee cools.**
-
-mutest targets boundary-value comparison operators (`>`, `>=`, `<`, `<=`) and equality operators (`==`, `!=`) — the #1 source of off-by-one and equality errors. It runs in seconds, not minutes. Zero dependencies. Pure Go standard library.
+A mutation testing tool for Go. By default, mutest focuses on boundary-value and equality operators. This keeps the mutant count low and execution fast.
 
 ```
 $ mutest ./...
 --- KILLED: calc.go:13:11  > to >= (0.63s)
 --- SURVIVED: calc.go:5:7  > to >= (0.21s)   ← test gap found!
 
-Killed: 1 (25.0%)  Survived: 3  Duration: 633ms
+Killed: 1  Survived: 3  Score: 25.0%  Duration: 633ms
 ```
 
 ---
 
 ## Why mutest?
 
-Traditional mutation testing tools mutate *everything*: arithmetic, logic, assignments, returns. The result? Thousands of mutants, hour-long runs, and noise that nobody reviews.
+Mutation testing tools that mutate everything — arithmetic, logic, assignments, returns — generate thousands of mutants and take a long time to run. mutest takes a different approach: **focus on the operators that matter most and run fast.**
 
-The reality is simpler: **most real-world bugs cluster around boundary conditions.** A `>` that should be `>=`. A `<` that should be `<=`. These are the mutations that matter.
+Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `!=` — is a well-studied subset of mutation operators known to be effective for fault detection. By limiting scope to ROR, mutest keeps the mutant count small enough to finish in seconds.
 
-| | Traditional tools | mutest |
+| | Full-scope tools | mutest |
 |---|---|---|
-| **Scope** | All operators | Comparison boundaries + equality |
+| **Scope** | All operators | Boundary-value + equality |
 | **Runtime** | Minutes to hours | **Seconds** |
 | **Signal-to-noise** | Low (many trivial survivors) | **High** (survivors = real test gaps) |
 | **CI-friendly** | Rarely | **By design** |
@@ -35,20 +33,15 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 
 ## Features
 
-- **Boundary-value mutations** — `>` ↔ `>=`, `<` ↔ `<=` (Tier 1)
-- **Equality mutations** — `==` ↔ `!=` (Tier 2)
-- **Runtime instrumentation** — All mutations per package compiled into a single test binary; each mutant activated via `MUTEST_ID` env var at runtime, avoiding per-mutant recompilation
-- **Non-destructive** — Source files are never modified; mutations are injected into generated code
+- **Fast** — One build per package, all mutants activated at runtime. No per-mutant recompilation
 - **Parallel execution** — Worker pool bounded by CPU cores
-- **go test-style output** — `--- KILLED:` / `--- SURVIVED:` progress by default; `-v` shows test output like `go test -v`
-- **Skip directive** — `//mutest:skip` to exclude functions or lines from mutation
-- **Threshold gate** — `-threshold` flag for CI quality gates
-- **False positive reduction** — Automatically skips `len(x) > 0` and similar no-op mutations
-- **JSON output** — Machine-readable output for CI pipelines and AI agents (`-json`)
-- **Dry-run mode** — Preview mutations without running tests (`-dry-run`)
-- **Extensible** — `Mutator` interface for adding new mutation tiers
+- **`go test`-compatible** — `--- KILLED:` / `--- SURVIVED:` output; `-v`, `-run`, `-timeout` work as expected
+- **`//mutest:skip`** — Exclude functions or lines from mutation
+- **`-threshold`** — CI quality gate (e.g., `-threshold 80` fails if score < 80%)
+- **`-json`** — Machine-readable output for CI pipelines (`-json -v` for NDJSON streaming)
+- **`-dry-run`** — Preview mutations without running tests
+- **False positive reduction** — Automatically skips equivalent mutants like `len(x) > 0`
 - **Zero dependencies** — Go standard library only
-- **CI-ready** — Exit code `1` on surviving mutants, `0` when all killed
 
 ---
 
@@ -106,8 +99,9 @@ mutest: testing with 10 workers, 30s timeout per mutant
 
 ===== Mutation Testing Summary =====
 Total:     4
-Killed:    1 (25.0%)
+Killed:    1
 Survived:  3
+Score:     25.0%
 Duration:  633ms
 
 Survived mutants (test gaps):
@@ -121,10 +115,13 @@ Survived mutants (test gaps):
 | Status | What it means |
 |--------|---------------|
 | **KILLED** | Your tests caught the mutation — the boundary is well-tested |
+| **TIMEOUT** | The mutation caused tests to hang — counted as detected |
 | **SURVIVED** | Your tests missed it — **a real test gap you should fix** |
 | **ERROR** | Infrastructure failure (not counted in the score) |
 
-**Mutation Score** = Killed / (Killed + Survived). Higher is better.
+**Mutation Score** = (Killed + Timeout) / (Killed + Timeout + Survived). Higher is better.
+
+> **Note:** Mutations that cause a panic (e.g., index out of bounds) are counted as **KILLED**. Go's exit code does not distinguish panics from test assertion failures, so mutest treats both as detected mutations.
 
 ### Fixing a Survived Mutant
 
@@ -197,7 +194,7 @@ The `-json` flag produces machine-readable output suitable for CI pipelines and 
 
 ```bash
 $ mutest -json ./...
-{"total":4,"killed":1,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":[...]}
+{"total":4,"killed":1,"timed_out":0,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":[...]}
 ```
 
 **Streaming mode** (`-json -v`): Emits one NDJSON line per mutant as results arrive, followed by a summary line:
@@ -207,7 +204,7 @@ $ mutest -json -v ./...
 {"status":"killed","file":"calc.go","line":13,"column":11,"original":">","mutated":">=","desc":"> to >=","duration":"632ms"}
 {"status":"survived","file":"calc.go","line":5,"column":7,"original":">","mutated":">=","desc":"> to >=","duration":"207ms"}
 ...
-{"total":4,"killed":1,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":null}
+{"total":4,"killed":1,"timed_out":0,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":null}
 ```
 
 When `-json` is active, informational messages are sent to stderr to keep stdout machine-parseable.
@@ -272,7 +269,7 @@ $ mutest -dry-run -json ./...
 3. **Instrument** — Replace each mutation target with a generic helper function call (e.g., `a > b` → `_mutest_cmp_1(a, b)`) and generate a runtime file that switches behavior based on `MUTEST_ID`
 4. **Build** — Compile one test binary per package with all mutations embedded
 5. **Test** — Run the pre-built binary once per mutation with `MUTEST_ID=N`, in a parallel worker pool
-6. **Judge** — `exit 0` = survived (test gap), `exit != 0` = killed (caught)
+6. **Judge** — `exit 0` = survived (test gap), `exit != 0` = killed (caught), timeout = detected (hung)
 
 This **runtime mutation selection** approach compiles each package only once regardless of how many mutations it contains. Traditional per-mutation compilation (`N mutations × compile`) is replaced with `P packages × compile + N mutations × run`, dramatically reducing overhead. **Original source files are never modified.**
 
@@ -291,44 +288,6 @@ Comparisons with non-zero literals (e.g., `len(s) > 1`) are **not** skipped — 
 
 ---
 
-## CI Integration
-
-### GitHub Actions
-
-```yaml
-- uses: actions/setup-go@v5
-  with:
-    go-version-file: go.mod
-
-- name: Run mutation tests
-  run: |
-    go install github.com/fchimpan/mutest@latest
-    mutest ./...
-```
-
-Surviving mutants cause exit code `1`, failing the CI step automatically.
-
-Use `-threshold` to set a minimum kill rate instead of requiring 100%:
-
-```yaml
-- name: Run mutation tests (quality gate)
-  run: |
-    go install github.com/fchimpan/mutest@latest
-    mutest -threshold 80 ./...  # fail if kill rate < 80%
-```
-
-Use `-json` for structured output that integrates with other tools:
-
-```yaml
-- name: Run mutation tests (JSON)
-  run: |
-    go install github.com/fchimpan/mutest@latest
-    mutest -json ./... | tee mutation-report.json
-    # Parse with jq, upload as artifact, etc.
-```
-
----
-
 ## Architecture
 
 ```
@@ -336,43 +295,14 @@ mutest/
 ├── main.go              # CLI entry point, flags, reporting
 ├── mutator/
 │   ├── mutator.go       # Mutator interface & MutationPoint type
-│   ├── comparison.go    # Tier 1: boundary comparison mutations (> >= < <=)
-│   └── equality.go      # Tier 2: equality mutations (== !=)
+│   ├── comparison.go    # Boundary comparison mutations (> >= < <=)
+│   └── equality.go      # Equality mutations (== !=)
 ├── engine/
 │   ├── engine.go        # AST traversal, overlay generation, //mutest:skip
 │   └── instrument.go    # Runtime mutation instrumentation & test binary compilation
 └── runner/
     └── runner.go        # Parallel test execution & result aggregation
 ```
-
-### Extending mutest
-
-Adding a new mutation tier requires only one file. Implement the `Mutator` interface:
-
-```go
-type Mutator interface {
-    Name() string
-    Discover(fset *token.FileSet, file *ast.File, filePath, pkg string) []MutationPoint
-    Apply(file *ast.File, point MutationPoint)
-}
-```
-
-Register it in `main.go`. No changes to engine or runner.
-
----
-
-## Roadmap
-
-- [x] JSON output (`-json`, NDJSON streaming with `-json -v`)
-- [x] Dry-run mode (`-dry-run`)
-- [x] **Tier 2**: `==` ↔ `!=` mutations
-- [x] `//mutest:skip` directive (function-level and line-level)
-- [x] `-threshold` flag for CI quality gates
-- [x] False positive reduction (`len()/cap()` vs `0` auto-skip)
-- [ ] **Tier 3**: `&&` ↔ `||` mutations
-- [ ] Coverage-based skip (don't test mutations on uncovered lines)
-- [ ] JUnit report output
-- [ ] HTML report output
 
 ---
 

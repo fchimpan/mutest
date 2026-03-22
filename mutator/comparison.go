@@ -5,7 +5,7 @@ import (
 	"go/token"
 )
 
-// swapTable defines Tier 1 boundary value mutations for comparison operators.
+// swapTable defines boundary value mutations for comparison operators.
 var swapTable = map[token.Token]token.Token{
 	token.GTR: token.GEQ, // >  -> >=
 	token.GEQ: token.GTR, // >= -> >
@@ -13,7 +13,7 @@ var swapTable = map[token.Token]token.Token{
 	token.LEQ: token.LSS, // <= -> <
 }
 
-// ComparisonMutator targets boundary value comparison operators (Tier 1).
+// ComparisonMutator targets boundary value comparison operators.
 type ComparisonMutator struct{}
 
 func (m *ComparisonMutator) Name() string { return "comparison-boundary" }
