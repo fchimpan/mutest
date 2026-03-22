@@ -22,13 +22,6 @@ Mutation testing tools that mutate everything — arithmetic, logic, assignments
 
 Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `!=` — is a well-studied subset of mutation operators known to be effective for fault detection. By limiting scope to ROR, mutest keeps the mutant count small enough to finish in seconds.
 
-| | Full-scope tools | mutest |
-|---|---|---|
-| **Scope** | All operators | Boundary-value + equality |
-| **Runtime** | Minutes to hours | **Seconds** |
-| **Signal-to-noise** | Low (many trivial survivors) | **High** (survivors = real test gaps) |
-| **CI-friendly** | Rarely | **By design** |
-
 ---
 
 ## Features
@@ -295,35 +288,6 @@ mutest -skip-err-propagation=false ./...
 ```
 
 ---
-
-## Architecture
-
-```
-mutest/
-├── main.go              # CLI entry point, flags, reporting
-├── mutator/
-│   ├── mutator.go       # Mutator interface & MutationPoint type
-│   ├── comparison.go    # Boundary comparison mutations (> >= < <=)
-│   └── equality.go      # Equality mutations (== !=)
-├── engine/
-│   ├── engine.go        # AST traversal, overlay generation, //mutest:skip
-│   └── instrument.go    # Runtime mutation instrumentation & test binary compilation
-└── runner/
-    └── runner.go        # Parallel test execution & result aggregation
-```
-
----
-
-## Contributing
-
-Contributions are welcome! Please open an issue first to discuss what you'd like to change.
-
-```bash
-git clone https://github.com/fchimpan/mutest.git
-cd mutest
-go test ./...                         # run tests
-cd testdata/project && go run ../.. ./...  # try it out
-```
 
 ## License
 
