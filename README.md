@@ -13,7 +13,7 @@ $ mutest ./...
 --- KILLED: calc.go:13:11  > to >= (0.63s)
 --- SURVIVED: calc.go:5:7  > to >= (0.21s)   ← test gap found!
 
-Killed: 1 (25.0%)  Survived: 3  Duration: 633ms
+Killed: 1  Survived: 3  Score: 25.0%  Duration: 633ms
 ```
 
 ---
@@ -106,8 +106,9 @@ mutest: testing with 10 workers, 30s timeout per mutant
 
 ===== Mutation Testing Summary =====
 Total:     4
-Killed:    1 (25.0%)
+Killed:    1
 Survived:  3
+Score:     25.0%
 Duration:  633ms
 
 Survived mutants (test gaps):
@@ -121,10 +122,13 @@ Survived mutants (test gaps):
 | Status | What it means |
 |--------|---------------|
 | **KILLED** | Your tests caught the mutation — the boundary is well-tested |
+| **TIMEOUT** | The mutation caused tests to hang — counted as detected |
 | **SURVIVED** | Your tests missed it — **a real test gap you should fix** |
 | **ERROR** | Infrastructure failure (not counted in the score) |
 
-**Mutation Score** = Killed / (Killed + Survived). Higher is better.
+**Mutation Score** = (Killed + Timeout) / (Killed + Timeout + Survived). Higher is better.
+
+> **Note:** Mutations that cause a panic (e.g., index out of bounds) are counted as **KILLED**. Go's exit code does not distinguish panics from test assertion failures, so mutest treats both as detected mutations.
 
 ### Fixing a Survived Mutant
 
@@ -197,7 +201,7 @@ The `-json` flag produces machine-readable output suitable for CI pipelines and 
 
 ```bash
 $ mutest -json ./...
-{"total":4,"killed":1,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":[...]}
+{"total":4,"killed":1,"timed_out":0,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":[...]}
 ```
 
 **Streaming mode** (`-json -v`): Emits one NDJSON line per mutant as results arrive, followed by a summary line:
@@ -207,7 +211,7 @@ $ mutest -json -v ./...
 {"status":"killed","file":"calc.go","line":13,"column":11,"original":">","mutated":">=","desc":"> to >=","duration":"632ms"}
 {"status":"survived","file":"calc.go","line":5,"column":7,"original":">","mutated":">=","desc":"> to >=","duration":"207ms"}
 ...
-{"total":4,"killed":1,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":null}
+{"total":4,"killed":1,"timed_out":0,"survived":3,"errors":0,"kill_rate":25,"duration":"633ms","results":null}
 ```
 
 When `-json` is active, informational messages are sent to stderr to keep stdout machine-parseable.
@@ -272,7 +276,7 @@ $ mutest -dry-run -json ./...
 3. **Instrument** — Replace each mutation target with a generic helper function call (e.g., `a > b` → `_mutest_cmp_1(a, b)`) and generate a runtime file that switches behavior based on `MUTEST_ID`
 4. **Build** — Compile one test binary per package with all mutations embedded
 5. **Test** — Run the pre-built binary once per mutation with `MUTEST_ID=N`, in a parallel worker pool
-6. **Judge** — `exit 0` = survived (test gap), `exit != 0` = killed (caught)
+6. **Judge** — `exit 0` = survived (test gap), `exit != 0` = killed (caught), timeout = detected (hung)
 
 This **runtime mutation selection** approach compiles each package only once regardless of how many mutations it contains. Traditional per-mutation compilation (`N mutations × compile`) is replaced with `P packages × compile + N mutations × run`, dramatically reducing overhead. **Original source files are never modified.**
 
