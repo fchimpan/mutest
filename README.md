@@ -16,6 +16,22 @@ Killed: 1  Survived: 3  Score: 25.0%  Duration: 633ms
 
 ---
 
+## What is Mutation Testing?
+
+Mutation testing evaluates the quality of your test suite by introducing small changes (**mutations**) to your source code and checking whether your tests detect them.
+
+| Term | Meaning |
+|------|---------|
+| **Mutant** | A copy of your code with a single deliberate change (e.g., `>` replaced with `>=`) |
+| **Killed** | A test failed after the mutation was applied — your tests caught the bug |
+| **Survived** | All tests still passed after the mutation — **your tests have a gap** |
+| **Timeout** | The mutation caused tests to hang or exceed the time limit — treated as detected |
+| **Mutation Score** | `(Killed + Timeout) / (Killed + Timeout + Survived)` — higher is better |
+
+A high mutation score means your tests are good at catching real bugs. Survived mutants point you to exact lines where adding a boundary or equality test would improve coverage.
+
+---
+
 ## Why mutest?
 
 Mutation testing tools that mutate everything — arithmetic, logic, assignments, returns — generate thousands of mutants and take a long time to run. mutest takes a different approach: **focus on the operators that matter most and run fast.**
