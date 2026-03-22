@@ -4,9 +4,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/fchimpan/mutest)](https://goreportcard.com/report/github.com/fchimpan/mutest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Mutation testing for Go that finishes before your coffee cools.**
-
-mutest targets boundary-value comparison operators (`>`, `>=`, `<`, `<=`) and equality operators (`==`, `!=`) — the #1 source of off-by-one and equality errors. It runs in seconds, not minutes. Zero dependencies. Pure Go standard library.
+A mutation testing tool for Go. By default, mutest focuses on boundary-value and equality operators — a small but effective subset backed by research on [sufficient mutation operators](https://dl.acm.org/doi/10.1145/227607.227610). This keeps the mutant count low and execution fast.
 
 ```
 $ mutest ./...
@@ -20,13 +18,13 @@ Killed: 1  Survived: 3  Score: 25.0%  Duration: 633ms
 
 ## Why mutest?
 
-Traditional mutation testing tools mutate *everything*: arithmetic, logic, assignments, returns. The result? Thousands of mutants, hour-long runs, and noise that nobody reviews.
+Mutation testing tools that mutate everything — arithmetic, logic, assignments, returns — generate thousands of mutants and take a long time to run. mutest takes a different approach: **focus on the operators that matter most and run fast.**
 
-The reality is simpler: **most real-world bugs cluster around boundary conditions.** A `>` that should be `>=`. A `<` that should be `<=`. These are the mutations that matter.
+Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `!=` — is one of the five [sufficient mutation operators](https://dl.acm.org/doi/10.1145/227607.227610) shown to achieve 99.5% of the fault detection of a full operator set. By limiting scope to ROR, mutest keeps the mutant count small enough to finish in seconds.
 
-| | Traditional tools | mutest |
+| | Full-scope tools | mutest |
 |---|---|---|
-| **Scope** | All operators | Comparison boundaries + equality |
+| **Scope** | All operators | Boundary-value + equality |
 | **Runtime** | Minutes to hours | **Seconds** |
 | **Signal-to-noise** | Low (many trivial survivors) | **High** (survivors = real test gaps) |
 | **CI-friendly** | Rarely | **By design** |
@@ -35,8 +33,8 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 
 ## Features
 
-- **Boundary-value mutations** — `>` ↔ `>=`, `<` ↔ `<=` (Tier 1)
-- **Equality mutations** — `==` ↔ `!=` (Tier 2)
+- **Boundary-value mutations** — `>` ↔ `>=`, `<` ↔ `<=`
+- **Equality mutations** — `==` ↔ `!=`
 - **Runtime instrumentation** — All mutations per package compiled into a single test binary; each mutant activated via `MUTEST_ID` env var at runtime, avoiding per-mutant recompilation
 - **Non-destructive** — Source files are never modified; mutations are injected into generated code
 - **Parallel execution** — Worker pool bounded by CPU cores
@@ -46,7 +44,7 @@ The reality is simpler: **most real-world bugs cluster around boundary condition
 - **False positive reduction** — Automatically skips `len(x) > 0` and similar no-op mutations
 - **JSON output** — Machine-readable output for CI pipelines and AI agents (`-json`)
 - **Dry-run mode** — Preview mutations without running tests (`-dry-run`)
-- **Extensible** — `Mutator` interface for adding new mutation tiers
+- **Extensible** — `Mutator` interface for adding new mutation operators
 - **Zero dependencies** — Go standard library only
 - **CI-ready** — Exit code `1` on surviving mutants, `0` when all killed
 
@@ -340,8 +338,8 @@ mutest/
 ├── main.go              # CLI entry point, flags, reporting
 ├── mutator/
 │   ├── mutator.go       # Mutator interface & MutationPoint type
-│   ├── comparison.go    # Tier 1: boundary comparison mutations (> >= < <=)
-│   └── equality.go      # Tier 2: equality mutations (== !=)
+│   ├── comparison.go    # Boundary comparison mutations (> >= < <=)
+│   └── equality.go      # Equality mutations (== !=)
 ├── engine/
 │   ├── engine.go        # AST traversal, overlay generation, //mutest:skip
 │   └── instrument.go    # Runtime mutation instrumentation & test binary compilation
@@ -351,7 +349,7 @@ mutest/
 
 ### Extending mutest
 
-Adding a new mutation tier requires only one file. Implement the `Mutator` interface:
+Adding a new mutation operator requires only one file. Implement the `Mutator` interface:
 
 ```go
 type Mutator interface {
@@ -362,21 +360,6 @@ type Mutator interface {
 ```
 
 Register it in `main.go`. No changes to engine or runner.
-
----
-
-## Roadmap
-
-- [x] JSON output (`-json`, NDJSON streaming with `-json -v`)
-- [x] Dry-run mode (`-dry-run`)
-- [x] **Tier 2**: `==` ↔ `!=` mutations
-- [x] `//mutest:skip` directive (function-level and line-level)
-- [x] `-threshold` flag for CI quality gates
-- [x] False positive reduction (`len()/cap()` vs `0` auto-skip)
-- [ ] **Tier 3**: `&&` ↔ `||` mutations
-- [ ] Coverage-based skip (don't test mutations on uncovered lines)
-- [ ] JUnit report output
-- [ ] HTML report output
 
 ---
 

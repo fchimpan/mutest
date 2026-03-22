@@ -5,13 +5,13 @@ import (
 	"go/token"
 )
 
-// equalitySwapTable defines Tier 2 equality mutations.
+// equalitySwapTable defines equality mutations.
 var equalitySwapTable = map[token.Token]token.Token{
 	token.EQL: token.NEQ, // == -> !=
 	token.NEQ: token.EQL, // != -> ==
 }
 
-// EqualityMutator targets equality comparison operators (Tier 2).
+// EqualityMutator targets equality comparison operators.
 type EqualityMutator struct{}
 
 func (m *EqualityMutator) Name() string { return "comparison-equality" }
