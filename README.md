@@ -4,7 +4,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/fchimpan/mutest)](https://goreportcard.com/report/github.com/fchimpan/mutest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A mutation testing tool for Go. By default, mutest focuses on boundary-value and equality operators — a small but effective subset backed by research on [sufficient mutation operators](https://dl.acm.org/doi/10.1145/227607.227610). This keeps the mutant count low and execution fast.
+A mutation testing tool for Go. By default, mutest focuses on boundary-value and equality operators — a small but effective subset [validated at industrial scale](https://homes.cs.washington.edu/~rjust/publ/practical_mutation_testing_tse_2021.pdf). This keeps the mutant count low and execution fast.
 
 ```
 $ mutest ./...
@@ -20,7 +20,7 @@ Killed: 1  Survived: 3  Score: 25.0%  Duration: 633ms
 
 Mutation testing tools that mutate everything — arithmetic, logic, assignments, returns — generate thousands of mutants and take a long time to run. mutest takes a different approach: **focus on the operators that matter most and run fast.**
 
-Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `!=` — is one of the five [sufficient mutation operators](https://dl.acm.org/doi/10.1145/227607.227610) shown to achieve 99.5% of the fault detection of a full operator set. By limiting scope to ROR, mutest keeps the mutant count small enough to finish in seconds.
+Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `!=` — is one of the five mutation operators [adopted by Google for practical mutation testing at scale](https://homes.cs.washington.edu/~rjust/publ/practical_mutation_testing_tse_2021.pdf). By limiting scope to ROR, mutest keeps the mutant count small enough to finish in seconds.
 
 | | Full-scope tools | mutest |
 |---|---|---|
