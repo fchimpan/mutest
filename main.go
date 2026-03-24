@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -101,7 +102,10 @@ func main() {
 		SkipErrPropagation: *skipErrPropagation,
 	}
 
-	code := run2(cfg, os.Stdout, os.Stderr)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	code := run2(ctx, cfg, os.Stdout, os.Stderr)
 	if code != 0 {
 		os.Exit(code)
 	}
@@ -121,7 +125,7 @@ func validateConfig(cfg config) error {
 }
 
 // run2 executes the mutation testing pipeline, returning an exit code.
-func run2(cfg config, stdout, stderr io.Writer) int {
+func run2(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 	if err := validateConfig(cfg); err != nil {
 		fmt.Fprintf(stderr, "mutest: %v\n", err)
 		return 2
@@ -172,10 +176,25 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "mutest: instrumentation error: %v\n", err)
 		return 2
 	}
-	defer engine.CleanupInstrumented(pkgs)
+	// Ensure temp dirs are cleaned up even on SIGINT/SIGTERM.
+	// defer alone is insufficient: os.Exit bypasses defers, and
+	// a killed process never runs them at all.
+	cleanupDone := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		engine.CleanupInstrumented(pkgs)
+		close(cleanupDone)
+	}()
+	defer func() {
+		engine.CleanupInstrumented(pkgs)
+		select {
+		case <-cleanupDone:
+		default:
+		}
+	}()
 
 	fmt.Fprintf(info, "mutest: building test binaries...\n")
-	if err := eng.BuildTestBinaries(context.Background(), pkgs); err != nil {
+	if err := eng.BuildTestBinaries(ctx, pkgs); err != nil {
 		fmt.Fprintf(stderr, "mutest: build error: %v\n", err)
 		return 2
 	}
@@ -216,7 +235,7 @@ func run2(cfg config, stdout, stderr io.Writer) int {
 		}
 	}
 
-	summary := runner.RunInstrumented(context.Background(), pkgs, runCfg, progress)
+	summary := runner.RunInstrumented(ctx, pkgs, runCfg, progress)
 
 	if cfg.JSON {
 		// When verbose, results were already streamed as NDJSON;
