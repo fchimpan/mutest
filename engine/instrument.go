@@ -153,7 +153,24 @@ type nodeKey struct {
 	op     token.Token // Original operator disambiguates between mutators
 }
 
+// mutTarget holds the raw position and mutation info collected during the AST walk.
+// The replacement text is built later in a bottom-up pass so that nested mutations
+// can be embedded into outer replacement text.
+type mutTarget struct {
+	xStart, xEnd int // byte offsets in original source for LHS operand
+	yStart, yEnd int // byte offsets in original source for RHS operand
+	point        mutator.MutationPoint
+	isNil        bool // true when one operand is nil (uses inline func)
+	kind         string
+}
+
+// fullStart/fullEnd returns the byte range of the entire binary expression.
+func (t *mutTarget) fullStart() int { return t.xStart }
+func (t *mutTarget) fullEnd() int   { return t.yEnd }
+
 // instrumentFile replaces mutation target expressions with helper function calls.
+// Nested binary expressions (e.g., `(a > b) == flag`) are handled by building
+// replacement text bottom-up: inner replacements are embedded in outer ones.
 func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint) ([]byte, []helperSpec, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filePath, src, parser.ParseComments)
@@ -168,8 +185,8 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 		pointByKey[nodeKey{p.NodeID, p.Original}] = p
 	}
 
-	var repls []replacement
-	var helpers []helperSpec
+	// Phase 1: Collect all mutation targets with their byte positions.
+	var targets []mutTarget
 	nodeID := 0
 
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -180,52 +197,88 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 
 		key := nodeKey{nodeID, bin.Op}
 		if pt, exists := pointByKey[key]; exists {
-			xStart := fset.Position(bin.X.Pos()).Offset
-			yEnd := fset.Position(bin.Y.End()).Offset
-			lhs := string(src[fset.Position(bin.X.Pos()).Offset:fset.Position(bin.X.End()).Offset])
-			rhs := string(src[fset.Position(bin.Y.Pos()).Offset:fset.Position(bin.Y.End()).Offset])
-
-			isNilComparison := isNilIdent(bin.X) || isNilIdent(bin.Y)
-
 			kind := "cmp"
 			if pt.Original == token.EQL || pt.Original == token.NEQ {
 				kind = "eq"
 			}
-
-			if isNilComparison {
-				callExpr := fmt.Sprintf("func() bool { _mutest_init(); if _mutest_active == %d { return %s %s %s }; return %s %s %s }()",
-					pt.MutestID, lhs, pt.Mutated.String(), rhs, lhs, pt.Original.String(), rhs)
-				repls = append(repls, replacement{start: xStart, end: yEnd, text: callExpr})
-				helpers = append(helpers, helperSpec{ID: pt.MutestID, Kind: "inline", Original: pt.Original, Mutated: pt.Mutated})
-			} else {
-				funcName := fmt.Sprintf("_mutest_%s_%d", kind, pt.MutestID)
-				callExpr := fmt.Sprintf("%s(%s, %s)", funcName, lhs, rhs)
-				repls = append(repls, replacement{start: xStart, end: yEnd, text: callExpr})
-				helpers = append(helpers, helperSpec{ID: pt.MutestID, Kind: kind, Original: pt.Original, Mutated: pt.Mutated})
-			}
+			targets = append(targets, mutTarget{
+				xStart: fset.Position(bin.X.Pos()).Offset,
+				xEnd:   fset.Position(bin.X.End()).Offset,
+				yStart: fset.Position(bin.Y.Pos()).Offset,
+				yEnd:   fset.Position(bin.Y.End()).Offset,
+				point:  pt,
+				isNil:  isNilIdent(bin.X) || isNilIdent(bin.Y),
+				kind:   kind,
+			})
 		}
 
 		nodeID++
 		return true
 	})
 
-	// Remove replacements whose byte range is fully contained within
-	// another replacement (nested binary expressions like `(a > b) == flag`).
-	// Keep only the outermost replacement to avoid overlapping ranges.
-	repls, helpers = removeNestedPairs(repls, helpers)
-
-	// Apply replacements in reverse order to preserve offsets.
-	sort.Slice(repls, func(i, j int) bool {
-		return repls[i].start > repls[j].start
+	// Phase 2: Build replacement text bottom-up (innermost first).
+	// Sort by range size ascending so inner targets are processed first.
+	sort.Slice(targets, func(i, j int) bool {
+		ri := targets[i].fullEnd() - targets[i].fullStart()
+		rj := targets[j].fullEnd() - targets[j].fullStart()
+		return ri < rj
 	})
 
-	// Build result in a single forward pass to avoid O(n²) append aliasing.
-	// Iterate repls in forward order (ascending start offset).
+	// Store completed replacements keyed by their range in the original source.
+	builtRepls := make(map[[2]int]replacement)
+
+	var helpers []helperSpec
+
+	for i := range targets {
+		t := &targets[i]
+		pt := t.point
+
+		// Extract LHS/RHS text, applying any already-built inner replacements.
+		lhs := textWithInnerRepls(src, t.xStart, t.xEnd, builtRepls)
+		rhs := textWithInnerRepls(src, t.yStart, t.yEnd, builtRepls)
+
+		var callExpr string
+		if t.isNil {
+			callExpr = fmt.Sprintf("func() bool { _mutest_init(); if _mutest_active == %d { return %s %s %s }; return %s %s %s }()",
+				pt.MutestID, lhs, pt.Mutated.String(), rhs, lhs, pt.Original.String(), rhs)
+			helpers = append(helpers, helperSpec{ID: pt.MutestID, Kind: "inline", Original: pt.Original, Mutated: pt.Mutated})
+		} else {
+			funcName := fmt.Sprintf("_mutest_%s_%d", t.kind, pt.MutestID)
+			callExpr = fmt.Sprintf("%s(%s, %s)", funcName, lhs, rhs)
+			helpers = append(helpers, helperSpec{ID: pt.MutestID, Kind: t.kind, Original: pt.Original, Mutated: pt.Mutated})
+		}
+
+		builtRepls[[2]int{t.fullStart(), t.fullEnd()}] = replacement{
+			start: t.fullStart(),
+			end:   t.fullEnd(),
+			text:  callExpr,
+		}
+	}
+
+	// Phase 3: Apply only root replacements (those not contained in any other).
+	var rootRepls []replacement
+	for key, r := range builtRepls {
+		nested := false
+		for outerKey := range builtRepls {
+			if key != outerKey && key[0] >= outerKey[0] && key[1] <= outerKey[1] {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			rootRepls = append(rootRepls, r)
+		}
+	}
+
+	sort.Slice(rootRepls, func(i, j int) bool {
+		return rootRepls[i].start > rootRepls[j].start
+	})
+
 	var buf bytes.Buffer
 	buf.Grow(len(src) * 2)
 	pos := 0
-	for i := len(repls) - 1; i >= 0; i-- {
-		r := repls[i]
+	for i := len(rootRepls) - 1; i >= 0; i-- {
+		r := rootRepls[i]
 		buf.Write(src[pos:r.start])
 		buf.WriteString(r.text)
 		pos = r.end
@@ -235,33 +288,53 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 	return buf.Bytes(), helpers, nil
 }
 
-// removeNestedPairs filters out replacements (and their corresponding helpers)
-// whose byte range is fully contained within another replacement's range.
-// This prevents panics when nested binary expressions (e.g., `(a > b) == flag`)
-// produce overlapping replacement ranges.
-func removeNestedPairs(repls []replacement, helpers []helperSpec) ([]replacement, []helperSpec) {
-	n := len(repls)
-	if n <= 1 {
-		return repls, helpers
-	}
-	contained := make([]bool, n)
-	for i := range n {
-		for j := range n {
-			if i != j && repls[i].start >= repls[j].start && repls[i].end <= repls[j].end {
-				contained[i] = true
+// textWithInnerRepls extracts text from src[start:end], applying any
+// already-built inner replacements that fall within that range.
+// Only "root" replacements are applied — those not nested inside another
+// replacement within the same range — since nested ones are already
+// embedded in their parent's text.
+func textWithInnerRepls(src []byte, start, end int, built map[[2]int]replacement) string {
+	// Collect replacements within [start, end) that are not contained
+	// in another replacement also within [start, end).
+	var roots []replacement
+	for key, r := range built {
+		if key[0] < start || key[1] > end {
+			continue
+		}
+		nested := false
+		for outerKey := range built {
+			if key == outerKey {
+				continue
+			}
+			if outerKey[0] < start || outerKey[1] > end {
+				continue
+			}
+			if key[0] >= outerKey[0] && key[1] <= outerKey[1] {
+				nested = true
 				break
 			}
 		}
-	}
-	filteredR := make([]replacement, 0, n)
-	filteredH := make([]helperSpec, 0, n)
-	for i, c := range contained {
-		if !c {
-			filteredR = append(filteredR, repls[i])
-			filteredH = append(filteredH, helpers[i])
+		if !nested {
+			roots = append(roots, r)
 		}
 	}
-	return filteredR, filteredH
+	if len(roots) == 0 {
+		return string(src[start:end])
+	}
+
+	sort.Slice(roots, func(i, j int) bool {
+		return roots[i].start < roots[j].start
+	})
+
+	var buf strings.Builder
+	pos := start
+	for _, r := range roots {
+		buf.Write(src[pos:r.start])
+		buf.WriteString(r.text)
+		pos = r.end
+	}
+	buf.Write(src[pos:end])
+	return buf.String()
 }
 
 // isNilIdent returns true if the expression is the identifier "nil".

@@ -9,9 +9,8 @@ import (
 )
 
 func TestInstrumentFile_NestedBinaryExpr(t *testing.T) {
-	// (a > b) == flag has two mutation targets: > and ==.
-	// The == replacement fully contains the > replacement.
-	// Only the outermost (==) should survive.
+	// (a > b) == flag: both > and == should be instrumented.
+	// The inner > call is embedded in the outer == call's LHS.
 	src := []byte(`package repro
 
 func Foo(a, b int, flag bool) bool {
@@ -19,12 +18,12 @@ func Foo(a, b int, flag bool) bool {
 }
 `)
 
-	// ast.Inspect visits in pre-order: outer == (nodeID=0), inner > (nodeID=1)
+	// ast.Inspect pre-order: outer == (nodeID=0), inner > (nodeID=1)
 	points := []mutator.MutationPoint{
 		{
 			File:     "repro.go",
 			Package:  "repro",
-			NodeID:   0, // outer: (a > b) == flag
+			NodeID:   0,
 			Original: token.EQL,
 			Mutated:  token.NEQ,
 			MutestID: 2,
@@ -33,7 +32,7 @@ func Foo(a, b int, flag bool) bool {
 		{
 			File:     "repro.go",
 			Package:  "repro",
-			NodeID:   1, // inner: a > b
+			NodeID:   1,
 			Original: token.GTR,
 			Mutated:  token.GEQ,
 			MutestID: 1,
@@ -48,24 +47,28 @@ func Foo(a, b int, flag bool) bool {
 
 	result := string(out)
 
-	// The outer == should be instrumented.
+	// Both mutations should be instrumented.
 	if !strings.Contains(result, "_mutest_eq_2") {
 		t.Errorf("expected outer == to be instrumented, got:\n%s", result)
 	}
-
-	// The inner > should NOT be instrumented (it's nested inside ==).
-	if strings.Contains(result, "_mutest_cmp_1") {
-		t.Errorf("expected inner > to be skipped (nested), got:\n%s", result)
+	if !strings.Contains(result, "_mutest_cmp_1") {
+		t.Errorf("expected inner > to be instrumented (nested in outer), got:\n%s", result)
 	}
 
-	// Should have only one helper (the outer ==).
-	if len(helpers) != 1 {
-		t.Errorf("expected 1 helper, got %d", len(helpers))
+	// The inner call should appear inside the outer call's LHS argument.
+	if !strings.Contains(result, "_mutest_eq_2(_mutest_cmp_1(a, b), flag)") &&
+		!strings.Contains(result, "_mutest_eq_2((_mutest_cmp_1(a, b)), flag)") {
+		t.Errorf("expected inner > call nested in outer == call, got:\n%s", result)
+	}
+
+	if len(helpers) != 2 {
+		t.Errorf("expected 2 helpers, got %d", len(helpers))
 	}
 }
 
 func TestInstrumentFile_DoubleNestedNil(t *testing.T) {
 	// (x != nil) == (y != nil): two != nested inside ==.
+	// All three mutations should be instrumented.
 	src := []byte(`package repro
 
 func Bar(x, y *int) bool {
@@ -78,7 +81,7 @@ func Bar(x, y *int) bool {
 		{
 			File:     "repro.go",
 			Package:  "repro",
-			NodeID:   0, // outer ==
+			NodeID:   0,
 			Original: token.EQL,
 			Mutated:  token.NEQ,
 			MutestID: 2,
@@ -87,7 +90,7 @@ func Bar(x, y *int) bool {
 		{
 			File:     "repro.go",
 			Package:  "repro",
-			NodeID:   1, // x != nil
+			NodeID:   1,
 			Original: token.NEQ,
 			Mutated:  token.EQL,
 			MutestID: 1,
@@ -96,7 +99,7 @@ func Bar(x, y *int) bool {
 		{
 			File:     "repro.go",
 			Package:  "repro",
-			NodeID:   2, // y != nil
+			NodeID:   2,
 			Original: token.NEQ,
 			Mutated:  token.EQL,
 			MutestID: 3,
@@ -104,82 +107,131 @@ func Bar(x, y *int) bool {
 		},
 	}
 
-	out, _, err := instrumentFile(src, "repro.go", points)
+	out, helpers, err := instrumentFile(src, "repro.go", points)
 	if err != nil {
 		t.Fatalf("instrumentFile: %v", err)
 	}
 
 	result := string(out)
 
-	// Only the outer == should be instrumented.
-	if !strings.Contains(result, "_mutest_eq_2") && !strings.Contains(result, "_mutest_active == 2") {
-		t.Errorf("expected outer == to be instrumented, got:\n%s", result)
+	// All three should be present.
+	// Inner != are nil comparisons → inline funcs with _mutest_active == N.
+	if !strings.Contains(result, "_mutest_active == 1") {
+		t.Errorf("expected left != (ID=1) to be instrumented, got:\n%s", result)
+	}
+	if !strings.Contains(result, "_mutest_active == 3") {
+		t.Errorf("expected right != (ID=3) to be instrumented, got:\n%s", result)
+	}
+	// Outer == is a non-nil comparison → helper func _mutest_eq_2.
+	if !strings.Contains(result, "_mutest_eq_2") {
+		t.Errorf("expected outer == (ID=2) to be instrumented as _mutest_eq_2, got:\n%s", result)
 	}
 
-	// Neither inner != should be instrumented.
-	if strings.Contains(result, "_mutest_active == 1") || strings.Contains(result, "_mutest_active == 3") {
-		t.Errorf("expected inner != to be skipped (nested), got:\n%s", result)
+	if len(helpers) != 3 {
+		t.Errorf("expected 3 helpers, got %d", len(helpers))
 	}
 }
 
-func TestRemoveNestedPairs(t *testing.T) {
-	dummyHelper := helperSpec{ID: 0, Kind: "cmp"}
+func TestInstrumentFile_TripleNested(t *testing.T) {
+	// ((a > b) == flag) != expected: three levels of nesting.
+	src := []byte(`package repro
 
-	tests := []struct {
-		name string
-		in   []replacement
-		want int
-	}{
+func Baz(a, b int, flag, expected bool) bool {
+	return ((a > b) == flag) != expected
+}
+`)
+
+	// ast.Inspect pre-order: != (0), == (1), > (2)
+	points := []mutator.MutationPoint{
 		{
-			name: "no overlap",
-			in: []replacement{
-				{start: 0, end: 10, text: "a"},
-				{start: 20, end: 30, text: "b"},
-			},
-			want: 2,
+			File:     "repro.go",
+			Package:  "repro",
+			NodeID:   0,
+			Original: token.NEQ,
+			Mutated:  token.EQL,
+			MutestID: 3,
+			Desc:     "!= to ==",
 		},
 		{
-			name: "inner contained in outer",
-			in: []replacement{
-				{start: 5, end: 10, text: "inner"},
-				{start: 0, end: 20, text: "outer"},
-			},
-			want: 1,
+			File:     "repro.go",
+			Package:  "repro",
+			NodeID:   1,
+			Original: token.EQL,
+			Mutated:  token.NEQ,
+			MutestID: 2,
+			Desc:     "== to !=",
 		},
 		{
-			name: "two inner contained in one outer",
-			in: []replacement{
-				{start: 2, end: 5, text: "inner1"},
-				{start: 0, end: 20, text: "outer"},
-				{start: 10, end: 15, text: "inner2"},
-			},
-			want: 1,
-		},
-		{
-			name: "single replacement",
-			in:   []replacement{{start: 0, end: 10, text: "only"}},
-			want: 1,
-		},
-		{
-			name: "empty",
-			in:   nil,
-			want: 0,
+			File:     "repro.go",
+			Package:  "repro",
+			NodeID:   2,
+			Original: token.GTR,
+			Mutated:  token.GEQ,
+			MutestID: 1,
+			Desc:     "> to >=",
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			helpers := make([]helperSpec, len(tt.in))
-			for i := range helpers {
-				helpers[i] = dummyHelper
-			}
-			gotR, gotH := removeNestedPairs(tt.in, helpers)
-			if len(gotR) != tt.want {
-				t.Errorf("got %d replacements, want %d", len(gotR), tt.want)
-			}
-			if len(gotH) != tt.want {
-				t.Errorf("got %d helpers, want %d", len(gotH), tt.want)
-			}
-		})
+	out, helpers, err := instrumentFile(src, "repro.go", points)
+	if err != nil {
+		t.Fatalf("instrumentFile: %v", err)
+	}
+
+	result := string(out)
+
+	// All three mutations should be present.
+	if !strings.Contains(result, "_mutest_cmp_1") {
+		t.Errorf("expected innermost > to be instrumented, got:\n%s", result)
+	}
+	if !strings.Contains(result, "_mutest_eq_2") {
+		t.Errorf("expected middle == to be instrumented, got:\n%s", result)
+	}
+	if !strings.Contains(result, "_mutest_eq_3") {
+		t.Errorf("expected outermost != to be instrumented, got:\n%s", result)
+	}
+
+	// Verify nesting: cmp_1 inside eq_2 inside eq_3
+	if !strings.Contains(result, "_mutest_eq_2(_mutest_cmp_1(a, b), flag)") &&
+		!strings.Contains(result, "_mutest_eq_2((_mutest_cmp_1(a, b)), flag)") {
+		t.Errorf("expected cmp_1 nested inside eq_2, got:\n%s", result)
+	}
+
+	if len(helpers) != 3 {
+		t.Errorf("expected 3 helpers, got %d", len(helpers))
+	}
+}
+
+func TestInstrumentFile_NoNesting(t *testing.T) {
+	// a > b without nesting should still work as before.
+	src := []byte(`package repro
+
+func Simple(a, b int) bool {
+	return a > b
+}
+`)
+
+	points := []mutator.MutationPoint{
+		{
+			File:     "repro.go",
+			Package:  "repro",
+			NodeID:   0,
+			Original: token.GTR,
+			Mutated:  token.GEQ,
+			MutestID: 1,
+			Desc:     "> to >=",
+		},
+	}
+
+	out, helpers, err := instrumentFile(src, "repro.go", points)
+	if err != nil {
+		t.Fatalf("instrumentFile: %v", err)
+	}
+
+	result := string(out)
+	if !strings.Contains(result, "_mutest_cmp_1(a, b)") {
+		t.Errorf("expected simple replacement, got:\n%s", result)
+	}
+	if len(helpers) != 1 {
+		t.Errorf("expected 1 helper, got %d", len(helpers))
 	}
 }
