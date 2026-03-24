@@ -209,6 +209,11 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 		return true
 	})
 
+	// Remove replacements whose byte range is fully contained within
+	// another replacement (nested binary expressions like `(a > b) == flag`).
+	// Keep only the outermost replacement to avoid overlapping ranges.
+	repls, helpers = removeNestedPairs(repls, helpers)
+
 	// Apply replacements in reverse order to preserve offsets.
 	sort.Slice(repls, func(i, j int) bool {
 		return repls[i].start > repls[j].start
@@ -228,6 +233,35 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 	buf.Write(src[pos:])
 
 	return buf.Bytes(), helpers, nil
+}
+
+// removeNestedPairs filters out replacements (and their corresponding helpers)
+// whose byte range is fully contained within another replacement's range.
+// This prevents panics when nested binary expressions (e.g., `(a > b) == flag`)
+// produce overlapping replacement ranges.
+func removeNestedPairs(repls []replacement, helpers []helperSpec) ([]replacement, []helperSpec) {
+	n := len(repls)
+	if n <= 1 {
+		return repls, helpers
+	}
+	contained := make([]bool, n)
+	for i := range n {
+		for j := range n {
+			if i != j && repls[i].start >= repls[j].start && repls[i].end <= repls[j].end {
+				contained[i] = true
+				break
+			}
+		}
+	}
+	filteredR := make([]replacement, 0, n)
+	filteredH := make([]helperSpec, 0, n)
+	for i, c := range contained {
+		if !c {
+			filteredR = append(filteredR, repls[i])
+			filteredH = append(filteredH, helpers[i])
+		}
+	}
+	return filteredR, filteredH
 }
 
 // isNilIdent returns true if the expression is the identifier "nil".
