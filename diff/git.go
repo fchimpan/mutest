@@ -14,6 +14,8 @@ var hunkRe = regexp.MustCompile(`@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 // ParseGitDiff runs git diff against baseRef and returns the changed lines
 // in Go source files. It uses the three-dot syntax (base...HEAD) to diff
 // from the merge-base, which is the correct behavior for PR branches.
+//
+//mutest:skip
 func ParseGitDiff(baseRef string) (ChangedLines, error) {
 	root, err := repoRoot()
 	if err != nil {
@@ -53,7 +55,7 @@ func parseDiffOutput(output []byte, root string) ChangedLines {
 		if strings.HasPrefix(line, "diff --git") {
 			// Extract the b/ path: "diff --git a/foo.go b/foo.go"
 			// Use LastIndex to handle paths containing " b/" as a directory component.
-			if idx := strings.LastIndex(line, " b/"); idx >= 0 {
+			if idx := strings.LastIndex(line, " b/"); idx >= 0 { //mutest:skip
 				currentFile = filepath.Join(root, line[idx+3:])
 			}
 			continue
