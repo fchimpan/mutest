@@ -199,3 +199,115 @@ func Skipped(a, b int) bool {
 		t.Errorf("expected 0 points (function with space variant skipped), got %d", len(points))
 	}
 }
+
+func TestDiscoverAll_SkipDirective_Block(t *testing.T) {
+	tmpDir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod": "module example.com/skip\n\ngo 1.21\n",
+		"skip.go": `package skip
+
+func Block(a, b, c int) bool {
+	if a > b { //mutest:skip
+		if b > c {
+			return true
+		}
+		return a > c
+	}
+	return a < b
+}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, tmpDir)
+
+	eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
+	points, err := eng.DiscoverAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only "a < b" on the last line should remain; the if block (a > b, b > c, a > c) is skipped.
+	if len(points) != 1 {
+		t.Errorf("expected 1 point (block-skipped), got %d", len(points))
+		for _, p := range points {
+			t.Logf("  %s:%d %s", p.File, p.Line, p.Desc)
+		}
+	}
+	if len(points) > 0 && points[0].Desc != "< to <=" {
+		t.Errorf("expected remaining point to be '<', got %q", points[0].Desc)
+	}
+}
+
+func TestDiscoverAll_SkipDirective_ForBlock(t *testing.T) {
+	tmpDir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod": "module example.com/skip\n\ngo 1.21\n",
+		"skip.go": `package skip
+
+func ForBlock(items []int) bool {
+	for i := 0; i < len(items); i++ { //mutest:skip
+		if items[i] > 0 {
+			return true
+		}
+	}
+	return len(items) > 1
+}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, tmpDir)
+
+	eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
+	points, err := eng.DiscoverAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only "len(items) > 1" should remain; the for block (i < len, items[i] > 0) is skipped.
+	if len(points) != 1 {
+		t.Errorf("expected 1 point (for-block skipped), got %d", len(points))
+		for _, p := range points {
+			t.Logf("  %s:%d %s", p.File, p.Line, p.Desc)
+		}
+	}
+}
+
+func TestDiscoverAll_SkipDirective_IfElseBlock(t *testing.T) {
+	tmpDir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod": "module example.com/skip\n\ngo 1.21\n",
+		"skip.go": `package skip
+
+func IfElse(a, b int) int {
+	if a > b { //mutest:skip
+		return a
+	} else if a < b {
+		return b
+	}
+	return 0
+}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, tmpDir)
+
+	eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
+	points, err := eng.DiscoverAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The entire if/else if chain is one ast.IfStmt — all should be skipped.
+	if len(points) != 0 {
+		t.Errorf("expected 0 points (if-else block skipped), got %d", len(points))
+		for _, p := range points {
+			t.Logf("  %s:%d %s", p.File, p.Line, p.Desc)
+		}
+	}
+}
