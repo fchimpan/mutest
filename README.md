@@ -45,7 +45,7 @@ Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `
 - **Fast** — One build per package, all mutants activated at runtime. No per-mutant recompilation
 - **Parallel execution** — Worker pool bounded by CPU cores
 - **`go test`-compatible** — `--- KILLED:` / `--- SURVIVED:` output; `-v`, `-run`, `-timeout` work as expected
-- **`//mutest:skip`** — Exclude functions or lines from mutation
+- **`//mutest:skip`** — Exclude functions, blocks (`if`/`for`/`switch`/`select`), or individual lines from mutation
 - **`-diff`** — Only mutate lines changed relative to a git ref (e.g., `-diff origin/main`)
 - **`-threshold`** — CI quality gate (e.g., `-threshold 80` fails if score < 80%)
 - **`-json`** — Machine-readable output for CI pipelines (`-json -v` for NDJSON streaming)
