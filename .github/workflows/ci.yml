@@ -18,3 +18,17 @@ jobs:
       - run: go vet ./...
 
       - run: go test ./... -race -cover
+
+  mutest:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - run: go run . -diff origin/${{ github.base_ref }} -threshold 100 ./...
