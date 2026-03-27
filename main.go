@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fchimpan/mutest/diff"
 	"github.com/fchimpan/mutest/engine"
 	"github.com/fchimpan/mutest/mutator"
 	"github.com/fchimpan/mutest/runner"
@@ -62,6 +63,7 @@ type config struct {
 	DryRun             bool
 	Threshold          float64
 	SkipErrPropagation bool
+	Diff               string
 }
 
 func main() {
@@ -74,6 +76,7 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "discover mutations without running tests")
 	threshold := flag.Float64("threshold", 0, "minimum kill rate percentage (0-100); exit 1 if below (0 = any survived mutant fails)")
 	skipErrPropagation := flag.Bool("skip-err-propagation", true, "skip simple error propagation patterns (if err != nil { return err })")
+	diffBase := flag.String("diff", "", "only mutate lines changed relative to this git ref (e.g., origin/main)")
 	flag.Parse()
 
 	if *showVersion {
@@ -100,6 +103,7 @@ func main() {
 		DryRun:             *dryRun,
 		Threshold:          *threshold,
 		SkipErrPropagation: *skipErrPropagation,
+		Diff:               *diffBase,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -141,6 +145,23 @@ func run2(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	// Informational messages go to stderr in JSON mode to keep stdout machine-readable.
+	info := stdout
+	if cfg.JSON {
+		info = stderr
+	}
+
+	if cfg.Diff != "" { //mutest:skip
+		cl, err := diff.ParseGitDiff(cfg.Diff)
+		if err != nil { //mutest:skip
+			fmt.Fprintf(stderr, "mutest: %v\n", err)
+			return 2
+		}
+		before := len(points)
+		points = diff.FilterPoints(points, cl)
+		fmt.Fprintf(info, "mutest: diff mode: filtered to %d of %d mutation points (changed vs %s)\n", len(points), before, cfg.Diff)
+	}
+
 	cwd, _ := os.Getwd()
 	rpc := newRelPathCache(cwd)
 
@@ -162,11 +183,6 @@ func run2(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 		return runDryRun(cfg, stdout, points, rpc)
 	}
 
-	// Informational messages go to stderr in JSON mode to keep stdout machine-readable.
-	info := stdout
-	if cfg.JSON {
-		info = stderr
-	}
 	fmt.Fprintf(info, "mutest: discovered %d mutation points\n", len(points))
 
 	// Instrument all packages and build test binaries.
