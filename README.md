@@ -46,6 +46,7 @@ Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `
 - **Parallel execution** — Worker pool bounded by CPU cores
 - **`go test`-compatible** — `--- KILLED:` / `--- SURVIVED:` output; `-v`, `-run`, `-timeout` work as expected
 - **`//mutest:skip`** — Exclude functions or lines from mutation
+- **`-diff`** — Only mutate lines changed relative to a git ref (e.g., `-diff origin/main`)
 - **`-threshold`** — CI quality gate (e.g., `-threshold 80` fails if score < 80%)
 - **`-json`** — Machine-readable output for CI pipelines (`-json -v` for NDJSON streaming)
 - **`-dry-run`** — Preview mutations without running tests
@@ -81,6 +82,9 @@ mutest -run TestBoundary ./...
 
 # Tune parallelism and timeout
 mutest -workers 4 -timeout 60s ./...
+
+# Only mutate lines changed vs main (ideal for CI)
+mutest -diff origin/main ./...
 
 # CI quality gate: fail if kill rate is below 80%
 mutest -threshold 80 ./...
@@ -188,6 +192,7 @@ Positional arguments are package patterns (default: `./...`), following the same
 |------|---------|-------------|
 | `-v` | `false` | Show test output for each mutant |
 | `-json` | `false` | Emit results as JSON (NDJSON when combined with `-v`) |
+| `-diff` | | Only mutate lines changed relative to this git ref (e.g., `origin/main`) |
 | `-dry-run` | `false` | Discover mutations without running tests |
 | `-run` | | Regexp to pass to `go test -run` |
 | `-workers` | `NumCPU` | Max parallel test processes |
@@ -218,6 +223,52 @@ $ mutest -json -v ./...
 ```
 
 When `-json` is active, informational messages are sent to stderr to keep stdout machine-parseable.
+
+### Diff Mode
+
+The `-diff` flag restricts mutation testing to lines changed relative to a git ref. This makes mutest practical for CI — instead of setting a threshold over the entire codebase, you enforce that **new and changed code** is well-tested.
+
+```bash
+# Lines changed vs main branch
+mutest -diff main ./...
+
+# Remote main (safer in CI where local main may be stale)
+mutest -diff origin/main ./...
+
+# Last N commits
+mutest -diff HEAD~3 ./...
+
+# Specific commit or tag
+mutest -diff v1.2.0 ./...
+```
+
+Internally, mutest runs `git diff --unified=0 <ref>...HEAD` to identify changed lines, then filters mutation points to only those locations. The three-dot syntax diffs from the merge-base, so it correctly captures the PR's actual changes.
+
+```
+$ mutest -diff origin/main ./...
+mutest: diff mode: filtered to 5 of 42 mutation points (changed vs origin/main)
+mutest: discovered 5 mutation points
+mutest: testing with 10 workers, 30s timeout per mutant
+
+--- KILLED: handler.go:25:11  > to >= (0.42s)
+--- KILLED: handler.go:31:7   == to != (0.38s)
+--- SURVIVED: handler.go:44:9  < to <= (0.19s)
+
+===== Mutation Testing Summary =====
+Total:     5
+Killed:    4
+Survived:  1
+Score:     80.0%
+Duration:  423ms
+```
+
+Combine with `-threshold 100` to require all changed comparisons to be covered:
+
+```bash
+mutest -diff origin/main -threshold 100 ./...
+```
+
+If the diff contains no mutation targets (e.g., only comments or non-Go files were changed), mutest exits 0.
 
 ### Skip Directive
 
