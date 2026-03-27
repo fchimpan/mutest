@@ -125,6 +125,7 @@ type lineRange struct {
 
 // buildSkipInfo scans the AST's comments for //mutest:skip directives.
 // A directive on a function's doc comment skips the entire function body.
+// A directive on a block statement (if/for/switch/select) skips the entire block.
 // A directive on any other line skips mutations on that specific line.
 func buildSkipInfo(fset *token.FileSet, file *ast.File) *skipInfo {
 	si := &skipInfo{
@@ -147,16 +148,56 @@ func buildSkipInfo(fset *token.FileSet, file *ast.File) *skipInfo {
 		}
 	}
 
-	// Line-level: all comments with mutest:skip
+	// Build line → block range map for block-scope skip.
+	blockRanges := buildBlockRanges(fset, file)
+
+	// Line-level and block-level: all comments with mutest:skip
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
 			if strings.Contains(c.Text, "mutest:skip") {
-				si.lines[fset.Position(c.Pos()).Line] = true
+				line := fset.Position(c.Pos()).Line
+				si.lines[line] = true
+				// If this line is the start of a block statement, skip the whole block.
+				if r, ok := blockRanges[line]; ok {
+					si.ranges = append(si.ranges, r)
+				}
 			}
 		}
 	}
 
 	return si
+}
+
+// buildBlockRanges walks the AST and returns a map from the starting line
+// of each block statement (if/for/switch/select) to its full line range.
+func buildBlockRanges(fset *token.FileSet, file *ast.File) map[int]lineRange {
+	ranges := make(map[int]lineRange)
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			return false
+		}
+		var start, end token.Pos
+		switch n := n.(type) {
+		case *ast.IfStmt:
+			start, end = n.Pos(), n.End()
+		case *ast.ForStmt:
+			start, end = n.Pos(), n.End()
+		case *ast.RangeStmt:
+			start, end = n.Pos(), n.End()
+		case *ast.SwitchStmt:
+			start, end = n.Pos(), n.End()
+		case *ast.TypeSwitchStmt:
+			start, end = n.Pos(), n.End()
+		case *ast.SelectStmt:
+			start, end = n.Pos(), n.End()
+		default:
+			return true
+		}
+		line := fset.Position(start).Line
+		ranges[line] = lineRange{line, fset.Position(end).Line}
+		return true
+	})
+	return ranges
 }
 
 func (si *skipInfo) shouldSkip(line int) bool {

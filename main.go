@@ -153,7 +153,7 @@ func run2(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 
 	if cfg.Diff != "" { //mutest:skip
 		cl, err := diff.ParseGitDiff(cfg.Diff)
-		if err != nil { //mutest:skip
+		if err != nil {
 			fmt.Fprintf(stderr, "mutest: %v\n", err)
 			return 2
 		}

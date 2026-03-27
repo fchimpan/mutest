@@ -283,7 +283,22 @@ func legacyCompare(a, b int) bool {
 }
 ```
 
-**Line-level skip** — add `//mutest:skip` as an inline comment to skip that line only:
+**Block-level skip** — add `//mutest:skip` as an inline comment on an `if`, `for`, `switch`, or `select` statement to skip the entire block:
+
+```go
+func fetch(url string) (*Response, error) {
+    resp, err := http.Get(url)
+    if err != nil { //mutest:skip
+        if errors.Is(err, context.Canceled) {
+            return nil, ErrCanceled
+        }
+        return nil, fmt.Errorf("fetch: %w", err)
+    }
+    return resp, nil
+}
+```
+
+**Line-level skip** — add `//mutest:skip` as an inline comment on any other line to skip that line only:
 
 ```go
 func compare(a, b int) int {
@@ -296,6 +311,8 @@ func compare(a, b int) int {
     return 0
 }
 ```
+
+> **Note:** When `//mutest:skip` is placed on a block statement (`if`/`for`/`switch`/`select`), it skips the entire block including nested statements. On any other line, it skips only that line.
 
 ### Dry-Run Mode
 
