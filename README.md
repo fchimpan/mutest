@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/fchimpan/mutest/actions/workflows/ci.yml/badge.svg)](https://github.com/fchimpan/mutest/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/fchimpan/mutest)](https://goreportcard.com/report/github.com/fchimpan/mutest)
+[![Go Version](https://img.shields.io/badge/Go-%3E%3D1.24-00ADD8?logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A mutation testing tool for Go. By default, mutest focuses on boundary-value and equality operators. This keeps the mutant count low and execution fast.
