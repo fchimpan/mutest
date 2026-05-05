@@ -1,4 +1,4 @@
-package main
+package mutest
 
 import (
 	"bytes"
@@ -30,7 +30,7 @@ func chdir(t *testing.T, dir string) {
 // --- Existing tests (unchanged behavior) ---
 
 func TestRun_WithTestProject(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -40,7 +40,7 @@ func TestRun_WithTestProject(t *testing.T) {
 		Verbose:  true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 	output := stdout.String()
 
 	if code != 1 {
@@ -82,7 +82,7 @@ func TestRun_NoMutationPoints(t *testing.T) {
 		Timeout:  10 * time.Second,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
@@ -100,7 +100,7 @@ func TestRun_InvalidPattern(t *testing.T) {
 		Timeout:  10 * time.Second,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	if code != 2 {
 		t.Errorf("expected exit code 2, got %d", code)
@@ -111,7 +111,7 @@ func TestRun_InvalidPattern(t *testing.T) {
 }
 
 func TestRun_NonVerbose(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -121,7 +121,7 @@ func TestRun_NonVerbose(t *testing.T) {
 		Verbose:  false,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 	output := stdout.String()
 
 	if code != 1 {
@@ -137,7 +137,7 @@ func TestRun_NonVerbose(t *testing.T) {
 }
 
 func TestRun_Verbose_ShowsTestOutput(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -147,7 +147,7 @@ func TestRun_Verbose_ShowsTestOutput(t *testing.T) {
 		Verbose:  true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 	output := stdout.String()
 
 	if code != 1 {
@@ -228,7 +228,7 @@ func TestValidateConfig_InvalidWorkers(t *testing.T) {
 		Timeout:  10 * time.Second,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	if code != 2 {
 		t.Errorf("expected exit code 2, got %d", code)
@@ -246,7 +246,7 @@ func TestValidateConfig_InvalidTimeout(t *testing.T) {
 		Timeout:  0,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	if code != 2 {
 		t.Errorf("expected exit code 2, got %d", code)
@@ -259,7 +259,7 @@ func TestValidateConfig_InvalidTimeout(t *testing.T) {
 // --- Dry-run tests ---
 
 func TestRun_DryRun_Text(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -269,7 +269,7 @@ func TestRun_DryRun_Text(t *testing.T) {
 		DryRun:   true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 	output := stdout.String()
 
 	if code != 0 {
@@ -288,7 +288,7 @@ func TestRun_DryRun_Text(t *testing.T) {
 }
 
 func TestRun_DryRun_JSON(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -299,7 +299,7 @@ func TestRun_DryRun_JSON(t *testing.T) {
 		JSON:     true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
@@ -344,7 +344,7 @@ func TestRun_DryRun_NoMutations(t *testing.T) {
 		DryRun:   true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
@@ -375,7 +375,7 @@ func TestRun_DryRun_JSON_NoMutations(t *testing.T) {
 		JSON:     true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
@@ -392,7 +392,7 @@ func TestRun_DryRun_JSON_NoMutations(t *testing.T) {
 // --- JSON output tests ---
 
 func TestRun_JSON_Summary(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -402,7 +402,7 @@ func TestRun_JSON_Summary(t *testing.T) {
 		JSON:     true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	if code != 1 {
 		t.Errorf("expected exit code 1, got %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
@@ -436,7 +436,7 @@ func TestRun_JSON_Summary(t *testing.T) {
 }
 
 func TestRun_JSON_Verbose_NDJSON(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -447,7 +447,7 @@ func TestRun_JSON_Verbose_NDJSON(t *testing.T) {
 		Verbose:  true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	if code != 1 {
 		t.Errorf("expected exit code 1, got %d", code)
@@ -505,7 +505,7 @@ func TestRun_JSON_NoMutations(t *testing.T) {
 		JSON:     true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
@@ -616,7 +616,7 @@ func TestToJSONResult(t *testing.T) {
 // --- Threshold tests ---
 
 func TestRun_Threshold_Met(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -626,7 +626,7 @@ func TestRun_Threshold_Met(t *testing.T) {
 		Threshold: 20.0, // kill rate is 25%, so 20% threshold should pass
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	if code != 0 {
 		t.Errorf("expected exit code 0 (threshold met), got %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
@@ -634,7 +634,7 @@ func TestRun_Threshold_Met(t *testing.T) {
 }
 
 func TestRun_Threshold_NotMet(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -644,7 +644,7 @@ func TestRun_Threshold_NotMet(t *testing.T) {
 		Threshold: 90.0, // kill rate is 50%, so 90% threshold should fail
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	if code != 1 {
 		t.Errorf("expected exit code 1 (threshold not met), got %d", code)
@@ -652,7 +652,7 @@ func TestRun_Threshold_NotMet(t *testing.T) {
 }
 
 func TestRun_Threshold_Zero_DefaultBehavior(t *testing.T) {
-	chdir(t, "testdata/project")
+	chdir(t, "../../testdata/project")
 
 	var stdout, stderr bytes.Buffer
 	cfg := config{
@@ -662,7 +662,7 @@ func TestRun_Threshold_Zero_DefaultBehavior(t *testing.T) {
 		Threshold: 0, // default: any survived = fail
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 
 	// testdata has survived mutants, so with threshold=0 (default) it should return 1
 	if code != 1 {
@@ -687,7 +687,7 @@ func TestValidateConfig_InvalidThreshold(t *testing.T) {
 				Timeout:   10 * time.Second,
 				Threshold: tt.threshold,
 			}
-			code := run2(context.Background(), cfg, &stdout, &stderr)
+			code := run(context.Background(), cfg, &stdout, &stderr)
 			if code != 2 {
 				t.Errorf("expected exit code 2, got %d", code)
 			}
@@ -722,7 +722,7 @@ func TestRun_EqualityMutator_Discovered(t *testing.T) {
 		JSON:     true,
 	}
 
-	code := run2(context.Background(), cfg, &stdout, &stderr)
+	code := run(context.Background(), cfg, &stdout, &stderr)
 	if code != 0 {
 		t.Errorf("expected exit code 0, got %d", code)
 	}
