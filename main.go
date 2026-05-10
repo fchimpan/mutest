@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 
@@ -11,5 +12,9 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	os.Exit(mutest.Run(ctx, os.Args[1:], os.Stdout, os.Stderr))
+
+	if err := mutest.Run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "mutest: %v\n", err)
+		os.Exit(1)
+	}
 }
