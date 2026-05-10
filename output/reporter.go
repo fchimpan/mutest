@@ -43,10 +43,7 @@ func (r *Reporter) Info() io.Writer {
 // DryRun emits the discovered mutation points without running tests.
 func (r *Reporter) DryRun(points []mutator.MutationPoint) {
 	if r.cfg.JSON {
-		if len(points) == 0 {
-			fmt.Fprintln(r.stdout, "[]")
-			return
-		}
+		// DryRunJSON encodes an empty slice as "[]" too, so no special-case needed.
 		DryRunJSON(r.stdout, points, r.rpc)
 		return
 	}
