@@ -1,4 +1,4 @@
-package mutest
+package output
 
 import (
 	"encoding/json"
@@ -6,10 +6,12 @@ import (
 	"math"
 	"time"
 
+	"github.com/fchimpan/mutest/mutator"
 	"github.com/fchimpan/mutest/runner"
 )
 
-type jsonMutationPoint struct {
+// JSONMutationPoint is the JSON wire format for a discovered mutation point.
+type JSONMutationPoint struct {
 	File     string `json:"file"`
 	Package  string `json:"package"`
 	Line     int    `json:"line"`
@@ -19,7 +21,8 @@ type jsonMutationPoint struct {
 	Desc     string `json:"desc"`
 }
 
-type jsonResult struct {
+// JSONResult is the JSON wire format for a single mutant test result.
+type JSONResult struct {
 	Status   string `json:"status"`
 	File     string `json:"file"`
 	Package  string `json:"package"`
@@ -33,7 +36,8 @@ type jsonResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
-type jsonSummary struct {
+// JSONSummary is the JSON wire format for the aggregate run summary.
+type JSONSummary struct {
 	Total    int          `json:"total"`
 	Killed   int          `json:"killed"`
 	TimedOut int          `json:"timed_out"`
@@ -41,10 +45,11 @@ type jsonSummary struct {
 	Errors   int          `json:"errors"`
 	KillRate float64      `json:"kill_rate"`
 	Duration string       `json:"duration"`
-	Results  []jsonResult `json:"results"`
+	Results  []JSONResult `json:"results"`
 }
 
-func toJSONResult(r runner.Result, rpc *relPathCache) jsonResult {
+// ToJSONResult converts a runner.Result into the JSON wire format.
+func ToJSONResult(r runner.Result, rpc *RelPathCache) JSONResult {
 	status := "survived"
 	if r.Err != nil {
 		status = "error"
@@ -53,9 +58,9 @@ func toJSONResult(r runner.Result, rpc *relPathCache) jsonResult {
 	} else if r.Killed {
 		status = "killed"
 	}
-	jr := jsonResult{
+	jr := JSONResult{
 		Status:   status,
-		File:     rpc.get(r.Point.File),
+		File:     rpc.Get(r.Point.File),
 		Package:  r.Point.Package,
 		Line:     r.Point.Line,
 		Column:   r.Point.Column,
@@ -71,18 +76,21 @@ func toJSONResult(r runner.Result, rpc *relPathCache) jsonResult {
 	return jr
 }
 
-func writeJSONSummary(w io.Writer, s *runner.Summary, rpc *relPathCache, includeResults bool) {
-	killRate := calcKillRate(s)
+// WriteJSONSummary writes the aggregate JSON summary to w. When includeResults
+// is false, the per-mutant Results slice is omitted (used for verbose NDJSON
+// streaming where individual results were already emitted).
+func WriteJSONSummary(w io.Writer, s *runner.Summary, rpc *RelPathCache, includeResults bool) {
+	killRate := CalcKillRate(s)
 
-	var results []jsonResult
+	var results []JSONResult
 	if includeResults {
-		results = make([]jsonResult, len(s.Results))
+		results = make([]JSONResult, len(s.Results))
 		for i, r := range s.Results {
-			results[i] = toJSONResult(r, rpc)
+			results[i] = ToJSONResult(r, rpc)
 		}
 	}
 
-	summary := jsonSummary{
+	summary := JSONSummary{
 		Total:    s.Total,
 		Killed:   s.Killed,
 		TimedOut: s.TimedOut,
@@ -92,11 +100,32 @@ func writeJSONSummary(w io.Writer, s *runner.Summary, rpc *relPathCache, include
 		Duration: s.Duration.Round(time.Millisecond).String(),
 		Results:  results,
 	}
-	enc := newJSONEncoder(w)
+	enc := NewJSONEncoder(w)
 	enc.Encode(summary)
 }
 
-func newJSONEncoder(w io.Writer) *json.Encoder {
+// DryRunJSON writes the discovered mutation points as a JSON array to w.
+func DryRunJSON(w io.Writer, points []mutator.MutationPoint, rpc *RelPathCache) {
+	pts := make([]JSONMutationPoint, len(points))
+	for i, p := range points {
+		pts[i] = JSONMutationPoint{
+			File:     rpc.Get(p.File),
+			Package:  p.Package,
+			Line:     p.Line,
+			Column:   p.Column,
+			Original: p.Original.String(),
+			Mutated:  p.Mutated.String(),
+			Desc:     p.Desc,
+		}
+	}
+	enc := NewJSONEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.Encode(pts)
+}
+
+// NewJSONEncoder returns an encoder configured for mutest's JSON output
+// (HTML escaping disabled).
+func NewJSONEncoder(w io.Writer) *json.Encoder {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	return enc

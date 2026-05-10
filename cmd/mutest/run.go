@@ -10,24 +10,35 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
-	"strings"
 	"time"
 
+	"github.com/fchimpan/mutest/config"
 	"github.com/fchimpan/mutest/diff"
 	"github.com/fchimpan/mutest/engine"
 	"github.com/fchimpan/mutest/mutator"
+	"github.com/fchimpan/mutest/output"
 	"github.com/fchimpan/mutest/runner"
 )
 
-// Set via ldflags at build time; fallback to debug.ReadBuildInfo for go install.
+var (
+	ErrTestsFailed     = errors.New("mutation tests failed")
+	ErrInvalidConfig   = errors.New("invalid config")
+	ErrDiscovery       = errors.New("error discovering mutations")
+	ErrDiff            = errors.New("diff parse error")
+	ErrInstrumentation = errors.New("instrumentation error")
+	ErrBuild           = errors.New("build error")
+)
+
+// Set via ldflags at build time; resolveVersion falls back to debug.ReadBuildInfo for go install.
 var (
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
 )
 
-func init() {
-	if version != "dev" {
+func resolveVersion() (v, c, d string) {
+	v, c, d = version, commit, date
+	if v != "dev" {
 		return
 	}
 	info, ok := debug.ReadBuildInfo()
@@ -35,38 +46,24 @@ func init() {
 		return
 	}
 	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		version = info.Main.Version
+		v = info.Main.Version
 	}
 	for _, s := range info.Settings {
 		switch s.Key {
 		case "vcs.revision":
 			if len(s.Value) > 7 {
-				commit = s.Value[:7]
+				c = s.Value[:7]
 			} else {
-				commit = s.Value
+				c = s.Value
 			}
 		case "vcs.time":
-			date = s.Value
+			d = s.Value
 		}
 	}
+	return
 }
 
-type config struct {
-	Patterns           []string
-	Workers            int
-	Timeout            time.Duration
-	Verbose            bool
-	Run                string
-	JSON               bool
-	DryRun             bool
-	Threshold          float64
-	SkipErrPropagation bool
-	Diff               string
-}
-
-// Run parses CLI arguments and executes the mutation testing pipeline.
-// It returns an exit code suitable for os.Exit.
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("mutest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -83,18 +80,19 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return 0
+			return nil
 		}
-		return 2
+		return err
 	}
 
 	if *showVersion {
-		if commit != "none" {
-			fmt.Fprintf(stdout, "mutest %s (commit: %s, built: %s)\n", version, commit, date)
+		v, c, d := resolveVersion()
+		if c != "none" {
+			fmt.Fprintf(stdout, "mutest %s (commit: %s, built: %s)\n", v, c, d)
 		} else {
-			fmt.Fprintf(stdout, "mutest %s\n", version)
+			fmt.Fprintf(stdout, "mutest %s\n", v)
 		}
-		return 0
+		return nil
 	}
 
 	patterns := fs.Args()
@@ -102,7 +100,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		patterns = []string{"./..."}
 	}
 
-	cfg := config{
+	cfg := config.Config{
 		Patterns:           patterns,
 		Workers:            *workers,
 		Timeout:            *timeout,
@@ -118,23 +116,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return run(ctx, cfg, stdout, stderr)
 }
 
-func validateConfig(cfg config) error {
-	if cfg.Workers <= 0 {
-		return fmt.Errorf("-workers must be > 0, got %d", cfg.Workers)
-	}
-	if cfg.Timeout <= 0 {
-		return fmt.Errorf("-timeout must be > 0, got %s", cfg.Timeout)
-	}
-	if cfg.Threshold < 0 || cfg.Threshold > 100 {
-		return fmt.Errorf("-threshold must be between 0 and 100, got %.1f", cfg.Threshold)
-	}
-	return nil
-}
-
-func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
-	if err := validateConfig(cfg); err != nil {
-		fmt.Fprintf(stderr, "mutest: %v\n", err)
-		return 2
+func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error {
+	if err := config.Validate(cfg); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 
 	eng := engine.New(cfg.Patterns, &mutator.ComparisonMutator{}, &mutator.EqualityMutator{
@@ -143,56 +127,41 @@ func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 
 	points, err := eng.DiscoverAll()
 	if err != nil {
-		fmt.Fprintf(stderr, "mutest: error discovering mutations: %v\n", err)
-		return 2
+		return fmt.Errorf("%w: %w", ErrDiscovery, err)
 	}
 
-	// Informational messages go to stderr in JSON mode to keep stdout machine-readable.
-	info := stdout
-	if cfg.JSON {
-		info = stderr
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current working directory: %w", err)
 	}
+	rep := output.NewReporter(cfg, stdout, stderr, cwd)
 
 	if cfg.Diff != "" { //mutest:skip
 		cl, err := diff.ParseGitDiff(cfg.Diff)
 		if err != nil {
-			fmt.Fprintf(stderr, "mutest: %v\n", err)
-			return 2
+			return fmt.Errorf("%w: %w", ErrDiff, err)
 		}
 		before := len(points)
 		points = diff.FilterPoints(points, cl)
-		fmt.Fprintf(info, "mutest: diff mode: filtered to %d of %d mutation points (changed vs %s)\n", len(points), before, cfg.Diff)
+		fmt.Fprintf(rep.Info(), "mutest: diff mode: filtered to %d of %d mutation points (changed vs %s)\n", len(points), before, cfg.Diff)
 	}
 
-	cwd, _ := os.Getwd()
-	rpc := newRelPathCache(cwd)
+	if cfg.DryRun {
+		rep.DryRun(points)
+		return nil
+	}
 
 	if len(points) == 0 {
-		if cfg.JSON {
-			if cfg.DryRun {
-				fmt.Fprintln(stdout, "[]")
-			} else {
-				writeJSONSummary(stdout, &runner.Summary{}, rpc, true)
-			}
-		} else {
-			fmt.Fprintln(stdout, "mutest: no mutation points found")
-		}
-		return 0
+		rep.NoMutationPoints()
+		return nil
 	}
 
-	// dry-run: list discovered mutations and exit
-	if cfg.DryRun {
-		return runDryRun(cfg, stdout, points, rpc)
-	}
+	fmt.Fprintf(rep.Info(), "mutest: discovered %d mutation points\n", len(points))
+	fmt.Fprintf(rep.Info(), "mutest: instrumenting packages...\n")
 
-	fmt.Fprintf(info, "mutest: discovered %d mutation points\n", len(points))
-
-	// Instrument all packages and build test binaries.
-	fmt.Fprintf(info, "mutest: instrumenting packages...\n")
 	pkgs, err := eng.InstrumentAll(points)
 	if err != nil {
-		fmt.Fprintf(stderr, "mutest: instrumentation error: %v\n", err)
-		return 2
+		return fmt.Errorf("%w: %w", ErrInstrumentation, err)
 	}
 	// Ensure temp dirs are cleaned up even on SIGINT/SIGTERM.
 	// defer alone is insufficient: os.Exit bypasses defers, and
@@ -211,13 +180,12 @@ func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 		}
 	}()
 
-	fmt.Fprintf(info, "mutest: building test binaries...\n")
+	fmt.Fprintf(rep.Info(), "mutest: building test binaries...\n")
 	if err := eng.BuildTestBinaries(ctx, pkgs); err != nil {
-		fmt.Fprintf(stderr, "mutest: build error: %v\n", err)
-		return 2
+		return fmt.Errorf("%w: %w", ErrBuild, err)
 	}
 
-	fmt.Fprintf(info, "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
+	fmt.Fprintf(rep.Info(), "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
 
 	runCfg := runner.Config{
 		Workers: cfg.Workers,
@@ -225,53 +193,18 @@ func run(ctx context.Context, cfg config, stdout, stderr io.Writer) int {
 		Run:     cfg.Run,
 	}
 
-	var progress runner.ProgressFunc
-	if cfg.JSON {
-		if cfg.Verbose {
-			enc := newJSONEncoder(stdout)
-			progress = func(r runner.Result, done, total int) {
-				enc.Encode(toJSONResult(r, rpc))
-			}
-		}
-	} else {
-		progress = func(r runner.Result, done, total int) {
-			status := "KILLED"
-			if r.Err != nil {
-				status = "ERROR"
-			} else if r.TimedOut {
-				status = "TIMEOUT"
-			} else if !r.Killed {
-				status = "SURVIVED"
-			}
-			fmt.Fprintf(stdout, "--- %s: %s:%d:%d  %s (%.2fs)\n",
-				status, rpc.get(r.Point.File), r.Point.Line, r.Point.Column, r.Point.Desc, r.Duration.Seconds())
-			if cfg.Verbose && r.Output != "" {
-				for line := range strings.SplitSeq(strings.TrimRight(r.Output, "\n"), "\n") {
-					fmt.Fprintf(stdout, "        %s\n", line)
-				}
-			}
-		}
-	}
+	summary := runner.RunInstrumented(ctx, pkgs, runCfg, rep.ProgressFunc())
 
-	summary := runner.RunInstrumented(ctx, pkgs, runCfg, progress)
-
-	if cfg.JSON {
-		// When verbose, results were already streamed as NDJSON;
-		// emit summary without duplicating them.
-		writeJSONSummary(stdout, summary, rpc, !cfg.Verbose)
-	} else {
-		printReport(stdout, summary, rpc)
-	}
+	rep.Summary(summary)
 
 	if cfg.Threshold > 0 {
-		killRate := calcKillRate(summary)
-		if killRate < cfg.Threshold {
-			return 1
+		if output.CalcKillRate(summary) < cfg.Threshold {
+			return ErrTestsFailed
 		}
-		return 0
+		return nil
 	}
 	if summary.Survived > 0 {
-		return 1
+		return ErrTestsFailed
 	}
-	return 0
+	return nil
 }
