@@ -183,9 +183,9 @@ func buildSkipInfo(fset *token.FileSet, file *ast.File) *skipInfo {
 // This is always safe: a const expression can never contain a runtime
 // comparison, so nothing that legitimately needs mutating is excluded —
 // this can only suppress mutation points, never miss a real one. Without
-// it, instrumenting a comparison inside a const expression replaces it with
-// a helper function call, which is not a constant expression and fails to
-// build the whole package (see docs/fix-design.md F6).
+// it, instrumenting a comparison inside a const expression (e.g.
+// `const IsBig = MaxSize > 10`) replaces it with a helper function call,
+// which is not a constant expression and fails to build the whole package.
 //
 // Known limitation: if a const declaration shares a line with a runtime
 // comparison (e.g. `if x > 0 { const c = 1 < 2 }`), the runtime comparison

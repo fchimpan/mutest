@@ -276,14 +276,14 @@ func ForBlock(items []int) bool {
 	}
 }
 
-// TestDiscoverAll_SkipsConstDeclarations covers F6: comparison/equality
-// operators inside `const` declarations must never be discovered as
-// mutation points. Instrumenting a const expression turns it into a
-// helper function call, which is not a constant expression and fails to
-// build (see docs/fix-design.md F6). Cases cover package-level single
-// const, block-form `const (...)`, and function-local const; the last
-// case is a control asserting that a runtime comparison on the line
-// immediately after a const declaration is NOT swept up by the skip range.
+// TestDiscoverAll_SkipsConstDeclarations verifies that comparison/equality
+// operators inside `const` declarations are never discovered as mutation
+// points. Instrumenting a const expression turns it into a helper function
+// call, which is not a constant expression and fails to build. Cases cover
+// package-level single const, block-form `const (...)`, and function-local
+// const; the last case is a control asserting that a runtime comparison on
+// the line immediately after a const declaration is NOT swept up by the
+// skip range.
 func TestDiscoverAll_SkipsConstDeclarations(t *testing.T) {
 	tests := []struct {
 		name      string
