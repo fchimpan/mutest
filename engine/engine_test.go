@@ -276,6 +276,119 @@ func ForBlock(items []int) bool {
 	}
 }
 
+// TestDiscoverAll_SkipsConstDeclarations verifies that comparison/equality
+// operators inside `const` declarations are never discovered as mutation
+// points. Instrumenting a const expression turns it into a helper function
+// call, which is not a constant expression and fails to build. Cases cover
+// package-level single const, block-form `const (...)`, and function-local
+// const; the last case is a control asserting that a runtime comparison on
+// the line immediately after a const declaration is NOT swept up by the
+// skip range.
+func TestDiscoverAll_SkipsConstDeclarations(t *testing.T) {
+	tests := []struct {
+		name      string
+		src       string
+		wantLines []int
+		wantDescs []string
+	}{
+		{
+			name: "package-level single const",
+			src: `package constskip
+
+const MaxSize = 100
+const IsBig = MaxSize > 10
+
+func Half(n int) int {
+	if n < 2 {
+		return 0
+	}
+	return n / 2
+}
+`,
+			wantLines: []int{7},
+			wantDescs: []string{"< to <="},
+		},
+		{
+			name: "block-form const",
+			src: `package constskip
+
+const (
+	A = 1 > 0
+	B = 2 == 2
+)
+
+func Check(n int) bool {
+	return n < 5
+}
+`,
+			wantLines: []int{9},
+			wantDescs: []string{"< to <="},
+		},
+		{
+			name: "function-local const",
+			src: `package constskip
+
+func Compute(n int) int {
+	const ok = 1 <= 2
+	if ok {
+		return n
+	}
+	return n + 1
+}
+
+func Runtime(n int) bool {
+	return n >= 3
+}
+`,
+			wantLines: []int{12},
+			wantDescs: []string{">= to >"},
+		},
+		{
+			name: "control: runtime comparison right after a const decl is not skipped",
+			src: `package constskip
+
+const IsBig = 100 > 10
+func RuntimeCheck(n int) bool { return n > 5 }
+`,
+			wantLines: []int{4},
+			wantDescs: []string{"> to >="},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			for name, content := range map[string]string{
+				"go.mod": "module example.com/constskip\n\ngo 1.21\n",
+				"lib.go": tc.src,
+			} {
+				if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			chdir(t, tmpDir)
+
+			eng := New([]string{"./..."}, &mutator.ComparisonMutator{}, &mutator.EqualityMutator{})
+			points, err := eng.DiscoverAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if len(points) != len(tc.wantLines) {
+				t.Fatalf("expected %d point(s), got %d: %+v", len(tc.wantLines), len(points), points)
+			}
+			for i, wantLine := range tc.wantLines {
+				if points[i].Line != wantLine {
+					t.Errorf("point[%d]: expected line %d, got %d", i, wantLine, points[i].Line)
+				}
+				if points[i].Desc != tc.wantDescs[i] {
+					t.Errorf("point[%d]: expected desc %q, got %q", i, tc.wantDescs[i], points[i].Desc)
+				}
+			}
+		})
+	}
+}
+
 func TestDiscoverAll_SkipDirective_IfElseBlock(t *testing.T) {
 	tmpDir := t.TempDir()
 	for name, content := range map[string]string{
