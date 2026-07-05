@@ -743,6 +743,104 @@ func TestThreshold(t *testing.T) {
 	}
 }
 
+// TestRun_GoVersionTooOld covers F9: a target module whose go directive is
+// below 1.20 must fail fast with a clear diagnostic before instrumentation
+// or build, instead of surfacing a confusing compiler error deep inside
+// mutest's generated helpers. mutest's equality helper is instantiated as
+// `_mutest_eq_N[T comparable](a, b T)`; comparing two `error` interface
+// values (as below) reproduces the "interface satisfies comparable"
+// requirement that only compiles under go1.20+, so before this fix the
+// build itself fails under go1.19.
+func TestRun_GoVersionTooOld(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeFiles(t, tmpDir, map[string]string{
+		"go.mod": "module example.com/go119\n\ngo 1.19\n",
+		"pkg/lib.go": `package pkg
+
+import "io"
+
+func IsEOF(err error) bool { return err == io.EOF }
+`,
+		"pkg/lib_test.go": `package pkg
+
+import (
+	"io"
+	"testing"
+)
+
+func TestIsEOF(t *testing.T) {
+	if !IsEOF(io.EOF) || IsEOF(nil) {
+		t.Fatal("wrong")
+	}
+}
+`,
+	})
+
+	chdir(t, tmpDir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := config.Config{
+		Patterns: []string{"./pkg"},
+		Workers:  1,
+		Timeout:  30 * time.Second,
+	}
+
+	err := run(context.Background(), cfg, &stdout, &stderr)
+	requireIs(t, err, ErrDiscovery)
+	if errors.Is(err, ErrBuild) {
+		t.Fatalf("expected a preflight go-version error, not a build error: %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "go directive") {
+		t.Errorf("expected error to mention 'go directive', got: %v", msg)
+	}
+	if !strings.Contains(msg, "1.20") {
+		t.Errorf("expected error to mention the minimum version '1.20', got: %v", msg)
+	}
+}
+
+// TestRun_GoVersionOK_Regression covers F9's regression requirement: modules
+// at or above the 1.20 minimum must be completely unaffected by the new
+// preflight check (no false rejections).
+func TestRun_GoVersionOK_Regression(t *testing.T) {
+	for _, goVersion := range []string{"1.20", "1.21", "1.24"} {
+		t.Run("go "+goVersion, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeFiles(t, tmpDir, map[string]string{
+				"go.mod": "module example.com/vercheck\n\ngo " + goVersion + "\n",
+				"lib.go": "package vercheck\n\nfunc Threshold(n int) bool { return n > 10 }\n",
+				"lib_test.go": `package vercheck
+
+import "testing"
+
+func TestThreshold(t *testing.T) {
+	if !Threshold(11) || Threshold(10) {
+		t.Fatal("wrong")
+	}
+}
+`,
+			})
+
+			chdir(t, tmpDir)
+
+			var stdout, stderr bytes.Buffer
+			cfg := config.Config{
+				Patterns: []string{"./..."},
+				Workers:  1,
+				Timeout:  30 * time.Second,
+				DryRun:   true,
+			}
+
+			if err := run(context.Background(), cfg, &stdout, &stderr); err != nil {
+				t.Fatalf("expected nil error for go %s (>= 1.20 minimum), got %v\nstderr: %s", goVersion, err, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "mutation points") {
+				t.Errorf("expected dry-run output listing mutation points, got: %s", stdout.String())
+			}
+		})
+	}
+}
+
 func TestRun_EqualityMutator_Discovered(t *testing.T) {
 	tmpDir := t.TempDir()
 	for name, content := range map[string]string{

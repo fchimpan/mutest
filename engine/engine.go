@@ -3,9 +3,11 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/version"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,9 +23,42 @@ type Overlay struct {
 
 // goPackage represents a subset of `go list -json` output.
 type goPackage struct {
-	Dir        string   `json:"Dir"`
-	ImportPath string   `json:"ImportPath"`
-	GoFiles    []string `json:"GoFiles"`
+	Dir        string    `json:"Dir"`
+	ImportPath string    `json:"ImportPath"`
+	GoFiles    []string  `json:"GoFiles"`
+	Module     *goModule `json:"Module"`
+}
+
+// goModule is the subset of `go list -json`'s Module object needed to
+// preflight-check the target module's go directive (see checkGoVersion).
+type goModule struct {
+	Path      string `json:"Path"`
+	GoVersion string `json:"GoVersion"`
+}
+
+// minTargetGoVersion is the lowest `go` directive mutest's generated
+// mutation helpers support: generics require Go 1.18+, and interfaces
+// satisfying the comparable constraint (used for equality helpers, e.g.
+// `error` operands) require Go 1.20+.
+const minTargetGoVersion = "go1.20"
+
+// checkGoVersion fails fast if mod's go directive is older than mutest's
+// generated helpers require. Without this check, an old go directive
+// produces a confusing compiler error deep inside generated code (e.g.
+// "error does not satisfy comparable") instead of a clear diagnostic.
+//
+// A nil mod, or one with an empty GoVersion (e.g. GOPATH mode, where `go
+// list -json` reports no Module at all), is skipped: there is nothing to
+// compare.
+func checkGoVersion(mod *goModule) error {
+	if mod == nil || mod.GoVersion == "" {
+		return nil
+	}
+	found := "go" + mod.GoVersion
+	if version.Compare(found, minTargetGoVersion) < 0 {
+		return fmt.Errorf("mutest requires the target module's go directive to be >= 1.20 (found go %s in module %s); mutest's generated helpers use generics and interface-satisfies-comparable", mod.GoVersion, mod.Path)
+	}
+	return nil
 }
 
 // Engine scans packages, discovers mutations, and instruments packages for testing.
@@ -101,6 +136,9 @@ func (e *Engine) resolveFiles() ([]string, error) {
 	for dec.More() {
 		var pkg goPackage
 		if err := dec.Decode(&pkg); err != nil {
+			return nil, err
+		}
+		if err := checkGoVersion(pkg.Module); err != nil {
 			return nil, err
 		}
 		for _, f := range pkg.GoFiles {
