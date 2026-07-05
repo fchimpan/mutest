@@ -126,6 +126,31 @@ func TestPrintReport_ErroredNotListedAsSurvived(t *testing.T) {
 	}
 }
 
+// TestRoundedKillRate covers F11: threshold comparisons must use the same
+// rounding as the displayed score (text %.1f, JSON kill_rate), so a run that
+// displays "Score: 80.0%" never fails "-threshold 80" over an unrounded
+// fractional remainder like 79.96.
+func TestRoundedKillRate(t *testing.T) {
+	tests := []struct {
+		name    string
+		summary *runner.Summary
+		want    float64
+	}{
+		{"exact percentage is unaffected", &runner.Summary{Total: 4, Killed: 3}, 75.0},
+		{"79.96 rounds up to 80.0", &runner.Summary{Total: 2500, Killed: 1999}, 80.0},
+		{"79.94 rounds down to 79.9", &runner.Summary{Total: 5000, Killed: 3997}, 79.9},
+		{"all survived is 0.0", &runner.Summary{Total: 3, Survived: 3}, 0.0},
+		{"empty summary is 0.0", &runner.Summary{}, 0.0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RoundedKillRate(tt.summary); got != tt.want {
+				t.Errorf("RoundedKillRate() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCalcKillRate(t *testing.T) {
 	tests := []struct {
 		name    string

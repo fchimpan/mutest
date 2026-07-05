@@ -121,12 +121,19 @@ func (e *Engine) instrumentPackage(importPath string, points []mutator.MutationP
 	// Write mutest_runtime.go to temp dir and add to overlay.
 	pkgName := points[0].Package
 	pkgDir := filepath.Dir(points[0].File)
+	runtimeVirtualPath := filepath.Join(pkgDir, "mutest_runtime.go")
+	// A real file at this exact path would otherwise be silently replaced by
+	// the overlay (its declarations vanish from the build with no warning,
+	// surfacing as a baffling "undefined" error). Fail loudly instead of
+	// picking a random overlay name, which would break overlay reproducibility.
+	if _, err := os.Stat(runtimeVirtualPath); err == nil {
+		return nil, fmt.Errorf("cannot instrument %s: a file named mutest_runtime.go already exists; please rename it", importPath)
+	}
 	runtimeSrc := generateRuntime(pkgName, allHelpers)
 	runtimeTempPath := filepath.Join(tempDir, "mutest_runtime.go")
 	if err := os.WriteFile(runtimeTempPath, runtimeSrc, 0644); err != nil {
 		return nil, err
 	}
-	runtimeVirtualPath := filepath.Join(pkgDir, "mutest_runtime.go")
 	overlayReplace[runtimeVirtualPath] = runtimeTempPath
 
 	// Write overlay JSON.

@@ -120,9 +120,20 @@ func RunInstrumented(ctx context.Context, pkgs map[string]*engine.InstrumentedPa
 	return summary
 }
 
+// testTimeoutBackstop is added to cfg.Timeout to derive the in-binary
+// `-test.timeout`. The context passed to exec.CommandContext (bounded by the
+// unpadded cfg.Timeout) is the primary timeout mechanism; the binary-internal
+// timeout is only a backstop against a runner-level failure to cancel it. The
+// two must never share the same value: if the in-binary timeout fired first,
+// it would panic the test binary — an *exec.ExitError indistinguishable from
+// a genuine test failure — and the runner's classifier (F1) would misreport
+// a TimedOut mutant as KILLED. Padding by a fixed margin makes the context
+// deadline always win, so classification is deterministic.
+const testTimeoutBackstop = 5 * time.Second
+
 // testArgs returns the go test flags shared by mutant and baseline runs.
 func testArgs(cfg Config) []string {
-	args := []string{"-test.failfast", "-test.count=1", fmt.Sprintf("-test.timeout=%s", cfg.Timeout)}
+	args := []string{"-test.failfast", "-test.count=1", fmt.Sprintf("-test.timeout=%s", cfg.Timeout+testTimeoutBackstop)}
 	if cfg.Run != "" {
 		args = append(args, "-test.run", cfg.Run)
 	}

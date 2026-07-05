@@ -237,7 +237,10 @@ func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error
 		if summary.Errors > 0 {
 			return ErrTestsFailed
 		}
-		if output.CalcKillRate(summary) < cfg.Threshold {
+		// Compare against the same rounded value shown to the user (F11): a
+		// raw-rate comparison could fail "-threshold 80" on a run that
+		// displays "Score: 80.0%" whenever the unrounded rate was e.g. 79.96.
+		if output.RoundedKillRate(summary) < cfg.Threshold {
 			return ErrTestsFailed
 		}
 		return nil

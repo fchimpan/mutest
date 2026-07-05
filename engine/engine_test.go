@@ -2,6 +2,7 @@ package engine
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -85,6 +86,45 @@ func TestDiscoverAll_InvalidPattern(t *testing.T) {
 	_, err := eng.DiscoverAll()
 	if err == nil {
 		t.Error("expected error for nonexistent package pattern")
+	}
+}
+
+// TestDiscoverAll_InvalidPattern_IncludesGoDiagnostic covers F13:
+// resolveFiles must surface `go list`'s own stderr diagnostic instead of the
+// bare "exit status 1" that *exec.ExitError.Error() returns on its own. The
+// expected substring is computed by shelling out to `go list` the same way
+// resolveFiles does, so the assertion tracks the real diagnostic instead of
+// hardcoding a message that could drift across Go versions.
+func TestDiscoverAll_InvalidPattern_IncludesGoDiagnostic(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module example.com/badpattern\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, tmpDir)
+
+	const pattern = "./nonexistent_package_xyz"
+
+	cmd := exec.Command("go", "list", "-json", pattern)
+	_, rawErr := cmd.Output()
+	exitErr, ok := rawErr.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected `go list` to fail with an ExitError for a bad pattern, got %v (%T)", rawErr, rawErr)
+	}
+	wantSubstr := strings.TrimSpace(string(exitErr.Stderr))
+	if wantSubstr == "" {
+		t.Fatal("expected go list to write a diagnostic to stderr")
+	}
+
+	eng := New([]string{pattern}, &mutator.ComparisonMutator{})
+	_, err := eng.DiscoverAll()
+	if err == nil {
+		t.Fatal("expected error for nonexistent package pattern")
+	}
+	if err.Error() == "exit status 1" {
+		t.Fatal("error must include go's diagnostic, not just the bare exit status")
+	}
+	if !strings.Contains(err.Error(), wantSubstr) {
+		t.Errorf("expected error to contain go list's diagnostic %q, got: %v", wantSubstr, err)
 	}
 }
 
@@ -425,6 +465,89 @@ func TestCheckGoVersion(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("expected nil error, got %v", err)
+			}
+		})
+	}
+}
+
+// TestDiscoverAll_SkipDirective_StandaloneComment covers F15: a
+// //mutest:skip comment placed alone on its own line (nothing but
+// whitespace before it) applies to the line that follows — and to the whole
+// block if that following line begins one (if/for/switch/select) — mirroring
+// the most natural misuse of the directive. A comment at the end of a line
+// of code (the previously documented, and only working, form) must keep
+// skipping only that line: the standalone case must not cause it to also
+// swallow the next line.
+func TestDiscoverAll_SkipDirective_StandaloneComment(t *testing.T) {
+	tests := []struct {
+		name      string
+		src       string
+		wantDescs []string // Desc of each surviving (non-skipped) point, in order.
+	}{
+		{
+			name: "standalone line skips only the following line",
+			src: `package skip
+
+func Mixed(a, b int) bool {
+	//mutest:skip
+	x := a > b
+	return x || a < b
+}
+`,
+			wantDescs: []string{"< to <="},
+		},
+		{
+			name: "standalone line before an if skips the whole block",
+			src: `package skip
+
+func Mixed(a, b, c int) bool {
+	//mutest:skip
+	if a > b {
+		return b > c
+	}
+	return a < b
+}
+`,
+			wantDescs: []string{"< to <="},
+		},
+		{
+			name: "end-of-line comment still skips only its own line",
+			src: `package skip
+
+func Mixed(a, b int) bool {
+	x := a > b //mutest:skip
+	return x || a < b
+}
+`,
+			wantDescs: []string{"< to <="},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			for name, content := range map[string]string{
+				"go.mod":  "module example.com/skip\n\ngo 1.21\n",
+				"skip.go": tc.src,
+			} {
+				if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			chdir(t, tmpDir)
+
+			eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
+			points, err := eng.DiscoverAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(points) != len(tc.wantDescs) {
+				t.Fatalf("expected %d point(s), got %d: %+v", len(tc.wantDescs), len(points), points)
+			}
+			for i, want := range tc.wantDescs {
+				if points[i].Desc != want {
+					t.Errorf("point[%d]: expected desc %q, got %q", i, want, points[i].Desc)
+				}
 			}
 		})
 	}

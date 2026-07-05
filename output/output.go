@@ -4,6 +4,7 @@ package output
 import (
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"time"
 
@@ -91,4 +92,14 @@ func CalcKillRate(s *runner.Summary) float64 {
 		return float64(detected) / float64(testable) * 100
 	}
 	return 0
+}
+
+// RoundedKillRate returns CalcKillRate rounded to one decimal place — the
+// same precision shown in text output (%.1f) and the JSON kill_rate field.
+// Any consumer that makes a pass/fail decision from the kill rate (e.g. the
+// -threshold gate) must compare against this value, not CalcKillRate's raw
+// result: otherwise a run that displays "Score: 80.0%" could still fail a
+// "-threshold 80" gate because the unrounded rate was 79.96.
+func RoundedKillRate(s *runner.Summary) float64 {
+	return math.Round(CalcKillRate(s)*10) / 10
 }
