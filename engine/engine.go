@@ -123,10 +123,12 @@ type lineRange struct {
 	start, end int
 }
 
-// buildSkipInfo scans the AST's comments for //mutest:skip directives.
-// A directive on a function's doc comment skips the entire function body.
-// A directive on a block statement (if/for/switch/select) skips the entire block.
-// A directive on any other line skips mutations on that specific line.
+// buildSkipInfo scans the AST's comments for //mutest:skip directives, and
+// also unconditionally excludes every `const` declaration (see
+// buildConstRanges). A directive on a function's doc comment skips the
+// entire function body. A directive on a block statement (if/for/switch/select)
+// skips the entire block. A directive on any other line skips mutations on
+// that specific line.
 func buildSkipInfo(fset *token.FileSet, file *ast.File) *skipInfo {
 	si := &skipInfo{
 		lines: make(map[int]bool),
@@ -165,7 +167,43 @@ func buildSkipInfo(fset *token.FileSet, file *ast.File) *skipInfo {
 		}
 	}
 
+	// const declarations: always excluded, regardless of any directive (see
+	// buildConstRanges for why this is safe).
+	si.ranges = append(si.ranges, buildConstRanges(fset, file)...)
+
 	return si
+}
+
+// buildConstRanges returns the line range of every `const` declaration
+// (*ast.GenDecl with Tok == token.CONST) in file, including package-level
+// declarations, block-form `const ( ... )` groups, and const declarations
+// local to a function body (ast.Inspect reaches the *ast.GenDecl nested
+// inside a function's *ast.DeclStmt just as it does top-level decls).
+//
+// This is always safe: a const expression can never contain a runtime
+// comparison, so nothing that legitimately needs mutating is excluded —
+// this can only suppress mutation points, never miss a real one. Without
+// it, instrumenting a comparison inside a const expression replaces it with
+// a helper function call, which is not a constant expression and fails to
+// build the whole package (see docs/fix-design.md F6).
+//
+// Known limitation: if a const declaration shares a line with a runtime
+// comparison (e.g. `if x > 0 { const c = 1 < 2 }`), the runtime comparison
+// on that shared line is also suppressed. This is an accepted, rare loss of
+// a single mutation point.
+func buildConstRanges(fset *token.FileSet, file *ast.File) []lineRange {
+	var ranges []lineRange
+	ast.Inspect(file, func(n ast.Node) bool {
+		decl, ok := n.(*ast.GenDecl)
+		if !ok || decl.Tok != token.CONST {
+			return true
+		}
+		start := fset.Position(decl.Pos()).Line
+		end := fset.Position(decl.End()).Line
+		ranges = append(ranges, lineRange{start, end})
+		return true
+	})
+	return ranges
 }
 
 // buildBlockRanges walks the AST and returns a map from the starting line
