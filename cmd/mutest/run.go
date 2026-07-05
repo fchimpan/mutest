@@ -27,6 +27,8 @@ var (
 	ErrDiff            = errors.New("diff parse error")
 	ErrInstrumentation = errors.New("instrumentation error")
 	ErrBuild           = errors.New("build error")
+	ErrBaseline        = errors.New("baseline test run failed (tests fail without mutations)")
+	ErrInterrupted     = errors.New("interrupted")
 )
 
 // Set via ldflags at build time; resolveVersion falls back to debug.ReadBuildInfo for go install.
@@ -116,6 +118,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return run(ctx, cfg, stdout, stderr)
 }
 
+// baselineErr classifies a VerifyBaseline failure. A failure observed after
+// the run context was canceled (e.g. SIGINT while the baseline was running)
+// is an interruption, not a broken test suite, and must not be reported as
+// ErrBaseline.
+func baselineErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ErrInterrupted
+	}
+	return fmt.Errorf("%w: %w", ErrBaseline, err)
+}
+
 func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error {
 	if err := config.Validate(cfg); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
@@ -185,7 +198,13 @@ func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error
 		return fmt.Errorf("%w: %w", ErrBuild, err)
 	}
 
-	fmt.Fprintf(rep.Info(), "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
+	// Packages with no test files (F3) build no binary; all their mutants
+	// survive. Surface this so the survived count is not mysterious.
+	for _, pkg := range pkgs {
+		if pkg.NoTests {
+			fmt.Fprintf(rep.Info(), "mutest: package %s has no test files (%d mutants will survive)\n", pkg.ImportPath, len(pkg.Mutations))
+		}
+	}
 
 	runCfg := runner.Config{
 		Workers: cfg.Workers,
@@ -193,17 +212,37 @@ func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error
 		Run:     cfg.Run,
 	}
 
+	// Baseline (F4): tests must pass with no mutation active, otherwise every
+	// mutant would be a false KILLED. Abort before running any mutant.
+	fmt.Fprintf(rep.Info(), "mutest: verifying baseline (tests must pass without mutations)...\n")
+	if err := runner.VerifyBaseline(ctx, pkgs, runCfg); err != nil {
+		return baselineErr(ctx, err)
+	}
+
+	fmt.Fprintf(rep.Info(), "mutest: testing with %d workers, %s timeout per mutant\n\n", cfg.Workers, cfg.Timeout)
+
 	summary := runner.RunInstrumented(ctx, pkgs, runCfg, rep.ProgressFunc())
 
 	rep.Summary(summary)
 
+	// Interruption (F5): if the run was canceled (e.g. SIGINT), do not judge
+	// success on partial results — that would fake a passing CI job.
+	if ctx.Err() != nil {
+		fmt.Fprintf(rep.Info(), "mutest: interrupted; %d mutants were not tested\n", summary.Canceled)
+		return ErrInterrupted
+	}
+
 	if cfg.Threshold > 0 {
+		// Errors mean mutants could not be tested; never silently pass them.
+		if summary.Errors > 0 {
+			return ErrTestsFailed
+		}
 		if output.CalcKillRate(summary) < cfg.Threshold {
 			return ErrTestsFailed
 		}
 		return nil
 	}
-	if summary.Survived > 0 {
+	if summary.Survived > 0 || summary.Errors > 0 {
 		return ErrTestsFailed
 	}
 	return nil

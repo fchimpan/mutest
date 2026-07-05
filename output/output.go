@@ -51,12 +51,15 @@ func PrintReport(w io.Writer, s *runner.Summary, rpc *RelPathCache) {
 	if s.Errors > 0 {
 		fmt.Fprintf(w, "Errors:    %d\n", s.Errors)
 	}
+	if s.Canceled > 0 {
+		fmt.Fprintf(w, "Canceled:  %d\n", s.Canceled)
+	}
 	fmt.Fprintf(w, "Score:     %.1f%%\n", CalcKillRate(s))
 	fmt.Fprintf(w, "Duration:  %s\n", s.Duration.Round(time.Millisecond))
 
 	var survived []runner.Result
 	for _, r := range s.Results {
-		if r.Err == nil && !r.Killed && !r.TimedOut {
+		if r.Err == nil && !r.Killed && !r.TimedOut && !r.Canceled {
 			survived = append(survived, r)
 		}
 	}
@@ -79,10 +82,11 @@ func DryRunText(w io.Writer, points []mutator.MutationPoint, rpc *RelPathCache) 
 }
 
 // CalcKillRate returns the percentage of testable mutants that were detected
-// (killed or timed out). Errors are excluded from the denominator.
+// (killed or timed out). Errors and canceled mutants are excluded from the
+// denominator, since neither represents a real test outcome.
 func CalcKillRate(s *runner.Summary) float64 {
 	detected := s.Killed + s.TimedOut
-	testable := s.Total - s.Errors
+	testable := s.Total - s.Errors - s.Canceled
 	if testable > 0 {
 		return float64(detected) / float64(testable) * 100
 	}

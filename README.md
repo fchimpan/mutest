@@ -131,7 +131,8 @@ Survived mutants (test gaps):
 | **KILLED** | Your tests caught the mutation — the boundary is well-tested |
 | **TIMEOUT** | The mutation caused tests to hang — counted as detected |
 | **SURVIVED** | Your tests missed it — **a real test gap you should fix** |
-| **ERROR** | Infrastructure failure (not counted in the score) |
+| **ERROR** | Infrastructure failure, e.g. the test binary could not be run (not counted in the score) |
+| **CANCELED** | The run was interrupted before this mutant was tested (not counted in the score) |
 
 **Mutation Score** = (Killed + Timeout) / (Killed + Timeout + Survived). Higher is better.
 
@@ -176,7 +177,7 @@ Re-run mutest and that mutation point will now show `--- KILLED:`.
 | Code | Meaning |
 |------|---------|
 | `0` | All mutants killed (or kill rate meets `-threshold`) |
-| `1` | Surviving mutants detected (or kill rate below `-threshold`) |
+| `1` | Surviving mutants detected, kill rate below `-threshold`, a mutant errored, the baseline failed (tests fail without any mutation), or the run was interrupted |
 | `2` | Fatal error (e.g., project parse failure) |
 
 ---
@@ -347,8 +348,11 @@ $ mutest -dry-run -json ./...
 2. **Discover** — Walk the AST to find `ast.BinaryExpr` with `>`, `>=`, `<`, `<=`, `==`, `!=` (respecting `//mutest:skip`)
 3. **Instrument** — Replace each mutation target with a generic helper function call (e.g., `a > b` → `_mutest_cmp_1(a, b)`) and generate a runtime file that switches behavior based on `MUTEST_ID`
 4. **Build** — Compile one test binary per package with all mutations embedded
-5. **Test** — Run the pre-built binary once per mutation with `MUTEST_ID=N`, in a parallel worker pool
-6. **Judge** — `exit 0` = survived (test gap), `exit != 0` = killed (caught), timeout = detected (hung)
+5. **Verify baseline** — Run each test binary once with **no** mutation active. If any package's tests fail without a mutation, mutest aborts (a broken or flaky suite would otherwise make every mutant a false KILLED)
+6. **Test** — Run the pre-built binary once per mutation with `MUTEST_ID=N`, in a parallel worker pool. Each binary runs with its package directory as the working directory, so `testdata` relative paths resolve
+7. **Judge** — `exit 0` = survived (test gap), `exit != 0` = killed (caught), timeout = detected (hung)
+
+A package with **no test files** builds no binary; its mutants are reported as `SURVIVED` (no tests is the largest possible test gap). If the run is interrupted (e.g. `Ctrl+C`), untested mutants are reported as `CANCELED` and mutest exits non-zero rather than judging success on partial results.
 
 This **runtime mutation selection** approach compiles each package only once regardless of how many mutations it contains. Traditional per-mutation compilation (`N mutations × compile`) is replaced with `P packages × compile + N mutations × run`, dramatically reducing overhead. **Original source files are never modified.**
 

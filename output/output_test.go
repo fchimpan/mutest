@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fchimpan/mutest/mutator"
 	"github.com/fchimpan/mutest/runner"
 )
 
@@ -65,6 +66,30 @@ func TestPrintReport_AllErrors(t *testing.T) {
 	}
 }
 
+func TestPrintReport_Canceled(t *testing.T) {
+	var buf bytes.Buffer
+	summary := &runner.Summary{
+		Total:    2,
+		Killed:   1,
+		Canceled: 1,
+		Duration: 100 * time.Millisecond,
+		Results: []runner.Result{
+			{Point: mutator.MutationPoint{File: "/base/a.go", Line: 1, Column: 1, Desc: "> to >="}, Killed: true},
+			{Point: mutator.MutationPoint{File: "/base/b.go", Line: 2, Column: 1, Desc: "< to <="}, Canceled: true},
+		},
+	}
+
+	PrintReport(&buf, summary, NewRelPathCache("/base"))
+	out := buf.String()
+
+	if !strings.Contains(out, "Canceled:") {
+		t.Errorf("expected a 'Canceled:' line, got: %s", out)
+	}
+	if strings.Contains(out, "Survived mutants") {
+		t.Errorf("canceled mutants must not be listed as survived, got: %s", out)
+	}
+}
+
 func TestCalcKillRate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -79,6 +104,8 @@ func TestCalcKillRate(t *testing.T) {
 		{"with timeout", &runner.Summary{Total: 5, Killed: 2, TimedOut: 1, Survived: 2}, float64(3) / float64(5) * 100},
 		{"timeout and errors", &runner.Summary{Total: 6, Killed: 2, TimedOut: 1, Survived: 1, Errors: 2}, float64(3) / float64(4) * 100},
 		{"all timeout", &runner.Summary{Total: 3, TimedOut: 3}, 100.0},
+		{"with canceled", &runner.Summary{Total: 5, Killed: 2, Canceled: 1, Survived: 2}, float64(2) / float64(4) * 100},
+		{"canceled and errors", &runner.Summary{Total: 6, Killed: 2, Canceled: 1, Errors: 1, Survived: 2}, float64(2) / float64(4) * 100},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

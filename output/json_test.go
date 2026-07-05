@@ -101,4 +101,39 @@ func TestToJSONResult(t *testing.T) {
 			t.Error("expected timed_out to be true")
 		}
 	})
+
+	t.Run("canceled", func(t *testing.T) {
+		r := runner.Result{
+			Point:    mutator.MutationPoint{File: "/work/canceled.go"},
+			Canceled: true,
+			Duration: 2 * time.Millisecond,
+		}
+		jr := ToJSONResult(r, rpc)
+		if jr.Status != "canceled" {
+			t.Errorf("expected status canceled, got %s", jr.Status)
+		}
+		if !jr.Canceled {
+			t.Error("expected canceled to be true")
+		}
+	})
+}
+
+func TestWriteJSONSummary_Canceled(t *testing.T) {
+	var buf bytes.Buffer
+	summary := &runner.Summary{
+		Total:    3,
+		Killed:   1,
+		Canceled: 2,
+		Duration: time.Second,
+	}
+
+	WriteJSONSummary(&buf, summary, NewRelPathCache("/base"), true)
+
+	var js JSONSummary
+	if err := json.Unmarshal(buf.Bytes(), &js); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if js.Canceled != 2 {
+		t.Errorf("expected canceled 2, got %d", js.Canceled)
+	}
 }

@@ -152,7 +152,7 @@ func TestReporter_ProgressFunc_TextVerboseEmptyOutput(t *testing.T) {
 		Output:   "",
 		Duration: time.Millisecond,
 	}, 1, 1)
-	for _, line := range strings.Split(stdout.String(), "\n") {
+	for line := range strings.SplitSeq(stdout.String(), "\n") {
 		if strings.HasPrefix(line, "        ") {
 			t.Errorf("expected no indented output for empty Output, got line: %q", line)
 		}
@@ -188,8 +188,10 @@ func TestStatusOf(t *testing.T) {
 		{"timeout", runner.Result{TimedOut: true}, "TIMEOUT"},
 		{"survived", runner.Result{}, "SURVIVED"},
 		{"killed", runner.Result{Killed: true}, "KILLED"},
+		{"canceled", runner.Result{Canceled: true}, "CANCELED"},
 		{"err takes precedence over timeout", runner.Result{Err: fmt.Errorf("x"), TimedOut: true}, "ERROR"},
 		{"timeout takes precedence over killed", runner.Result{TimedOut: true, Killed: true}, "TIMEOUT"},
+		{"canceled takes precedence over err", runner.Result{Canceled: true, Err: fmt.Errorf("x")}, "CANCELED"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
