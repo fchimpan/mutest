@@ -46,6 +46,21 @@ func TestFilterPoints(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "nil line set means the whole file changed",
+			cl: ChangedLines{
+				"/src/a.go": nil,       // untracked file: every line is "changed"
+				"/src/b.go": {5: true}, // tracked file: only line 5 changed
+			},
+			want: []string{"a:10", "a:20", "b:5"},
+		},
+		{
+			name: "nil line set keeps every point in that file",
+			cl: ChangedLines{
+				"/src/a.go": nil,
+			},
+			want: []string{"a:10", "a:20"},
+		},
+		{
 			name: "file matches but line does not",
 			cl: ChangedLines{
 				"/src/a.go": {99: true},
