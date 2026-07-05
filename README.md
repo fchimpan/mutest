@@ -64,6 +64,10 @@ go install github.com/fchimpan/mutest@latest
 
 Pre-built binaries for Linux, macOS, and Windows are available on the [Releases](https://github.com/fchimpan/mutest/releases) page.
 
+### Requirements
+
+The **target module** — the code you run mutest against — must declare `go 1.20` or later in its `go.mod`. mutest's generated mutation helpers use generics and rely on interfaces satisfying `comparable`, both of which require Go 1.20+. mutest checks this before instrumenting anything and fails fast with a clear error if the module's `go` directive is too old, instead of an obscure compiler error. Modules with no reported Go version (e.g. GOPATH mode) are not checked.
+
 ---
 
 ## Quick Start

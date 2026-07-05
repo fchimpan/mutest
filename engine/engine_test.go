@@ -389,6 +389,47 @@ func RuntimeCheck(n int) bool { return n > 5 }
 	}
 }
 
+// TestCheckGoVersion covers F9: the target module's go directive must be
+// >= 1.20 (mutest's generated helpers use generics and interfaces
+// satisfying comparable, both of which require Go 1.20+). A module with no
+// reported GoVersion (e.g. GOPATH mode) must be skipped, not rejected.
+func TestCheckGoVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		mod     *goModule
+		wantErr bool
+	}{
+		{"nil module (GOPATH mode) is skipped", nil, false},
+		{"empty GoVersion is skipped", &goModule{Path: "example.com/gopath", GoVersion: ""}, false},
+		{"below minimum 1.19 is rejected", &goModule{Path: "example.com/old", GoVersion: "1.19"}, true},
+		{"at minimum 1.20 is accepted", &goModule{Path: "example.com/atmin", GoVersion: "1.20"}, false},
+		{"above minimum 1.24 is accepted", &goModule{Path: "example.com/new", GoVersion: "1.24"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkGoVersion(tt.mod)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				if !strings.Contains(err.Error(), "go directive") {
+					t.Errorf("expected error to mention 'go directive', got: %v", err)
+				}
+				if !strings.Contains(err.Error(), "1.20") {
+					t.Errorf("expected error to mention the minimum version '1.20', got: %v", err)
+				}
+				if !strings.Contains(err.Error(), tt.mod.Path) {
+					t.Errorf("expected error to mention the module path %q, got: %v", tt.mod.Path, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected nil error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestDiscoverAll_SkipDirective_IfElseBlock(t *testing.T) {
 	tmpDir := t.TempDir()
 	for name, content := range map[string]string{
