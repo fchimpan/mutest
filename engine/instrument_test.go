@@ -1,7 +1,10 @@
 package engine
 
 import (
+	"context"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -198,6 +201,82 @@ func Baz(a, b int, flag, expected bool) bool {
 
 	if len(helpers) != 3 {
 		t.Errorf("expected 3 helpers, got %d", len(helpers))
+	}
+}
+
+// TestBuildTestBinary_NoTestsDetection covers the NoTests detection: `go test
+// -c` exits 0 without producing a binary when the package has no test files.
+// BuildTestBinary must flag such packages via os.Stat (NoTests=true, no
+// BinaryPath) and must leave packages WITH tests fully built.
+func TestBuildTestBinary_NoTestsDetection(t *testing.T) {
+	tests := []struct {
+		name        string
+		files       map[string]string
+		wantNoTests bool
+	}{
+		{
+			name: "package with tests builds a binary",
+			files: map[string]string{
+				"go.mod":      "module example.com/buildbin\n\ngo 1.21\n",
+				"lib.go":      "package buildbin\n\nfunc Positive(n int) bool { return n > 0 }\n",
+				"lib_test.go": "package buildbin\n\nimport \"testing\"\n\nfunc TestPositive(t *testing.T) { if !Positive(1) || Positive(0) { t.Fail() } }\n",
+			},
+			wantNoTests: false,
+		},
+		{
+			name: "package without tests is flagged NoTests",
+			files: map[string]string{
+				"go.mod": "module example.com/buildbin\n\ngo 1.21\n",
+				"lib.go": "package buildbin\n\nfunc Positive(n int) bool { return n > 0 }\n",
+			},
+			wantNoTests: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			for name, content := range tt.files {
+				if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			chdir(t, tmpDir)
+
+			eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
+			points, err := eng.DiscoverAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkgs, err := eng.InstrumentAll(points)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { CleanupInstrumented(pkgs) })
+			if len(pkgs) != 1 {
+				t.Fatalf("expected 1 instrumented package, got %d", len(pkgs))
+			}
+
+			for _, pkg := range pkgs {
+				if err := eng.BuildTestBinary(context.Background(), pkg); err != nil {
+					t.Fatalf("BuildTestBinary: %v", err)
+				}
+				if pkg.NoTests != tt.wantNoTests {
+					t.Errorf("NoTests = %v, want %v", pkg.NoTests, tt.wantNoTests)
+				}
+				if tt.wantNoTests {
+					if pkg.BinaryPath != "" {
+						t.Errorf("BinaryPath = %q, want empty for a package without tests", pkg.BinaryPath)
+					}
+				} else {
+					if pkg.BinaryPath == "" {
+						t.Fatal("BinaryPath is empty for a package with tests")
+					}
+					if _, err := os.Stat(pkg.BinaryPath); err != nil {
+						t.Errorf("test binary not found at BinaryPath: %v", err)
+					}
+				}
+			}
+		})
 	}
 }
 

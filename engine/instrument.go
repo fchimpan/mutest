@@ -23,7 +23,9 @@ import (
 type InstrumentedPackage struct {
 	ImportPath  string
 	BinaryPath  string
+	Dir         string // absolute package source directory; used as the test binary's cwd
 	Mutations   []mutator.MutationPoint
+	NoTests     bool // true when the package has no test files (no binary is built)
 	TempDir     string
 	OverlayPath string
 }
@@ -139,6 +141,7 @@ func (e *Engine) instrumentPackage(importPath string, points []mutator.MutationP
 
 	return &InstrumentedPackage{
 		ImportPath:  importPath,
+		Dir:         pkgDir, // absolute (points[0].File is absolute); used as the test binary's cwd
 		Mutations:   points,
 		TempDir:     tempDir,
 		OverlayPath: overlayPath,
@@ -409,6 +412,13 @@ func (e *Engine) BuildTestBinary(ctx context.Context, pkg *InstrumentedPackage) 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("build %s: %w\n%s", pkg.ImportPath, err, out)
+	}
+	// `go test -c` exits 0 without producing a binary when the package has no
+	// test files (it prints "?  pkg [no test files]"). Detect this via stat —
+	// never by parsing output — and mark the package so its mutants survive.
+	if _, statErr := os.Stat(binPath); statErr != nil {
+		pkg.NoTests = true
+		return nil
 	}
 	pkg.BinaryPath = binPath
 	return nil

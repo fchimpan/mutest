@@ -35,6 +35,21 @@ func requireIs(t *testing.T, err, sentinel error) {
 	}
 }
 
+// writeFiles writes name->content files under dir, creating parent
+// directories as needed. Names may contain slashes for subpackages.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestRun_WithTestProject(t *testing.T) {
 	chdir(t, "../../testdata/project")
 
@@ -508,6 +523,223 @@ func TestValidateConfig_InvalidThreshold(t *testing.T) {
 				t.Errorf("expected threshold validation error, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestRun_CwdRelativeToPackageDir covers F2: the test binary must run with the
+// package source directory as its cwd, so testdata relative reads succeed. The
+// boundary (10 vs 11) is intentionally untested, so the > -> >= mutant survives.
+// Before the fix, the binary ran in the module root, the fixture read failed,
+// and the mutant was a false KILLED.
+func TestRun_CwdRelativeToPackageDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeFiles(t, tmpDir, map[string]string{
+		"go.mod":        "module example.com/cwdmod\n\ngo 1.21\n",
+		"cwdpkg/lib.go": "package cwdpkg\n\nfunc Threshold(n int) bool { return n > 10 }\n",
+		"cwdpkg/lib_test.go": `package cwdpkg
+
+import (
+	"os"
+	"testing"
+)
+
+func TestThreshold(t *testing.T) {
+	if _, err := os.ReadFile("testdata/fixture.txt"); err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	// Boundary (10 vs 11) intentionally untested: > -> >= must SURVIVE.
+	if !Threshold(20) || Threshold(0) {
+		t.Fatal("wrong")
+	}
+}
+`,
+		"cwdpkg/testdata/fixture.txt": "fixture\n",
+	})
+
+	chdir(t, tmpDir) // module root, NOT the package dir
+
+	var stdout, stderr bytes.Buffer
+	cfg := config.Config{
+		Patterns: []string{"./cwdpkg"},
+		Workers:  1,
+		Timeout:  30 * time.Second,
+		JSON:     true,
+	}
+
+	err := run(context.Background(), cfg, &stdout, &stderr)
+	if !errors.Is(err, ErrTestsFailed) {
+		t.Fatalf("expected ErrTestsFailed (survived mutant), got %v\nstderr: %s", err, stderr.String())
+	}
+
+	var summary output.JSONSummary
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
+		t.Fatalf("invalid JSON: %v\nstdout: %s", err, stdout.String())
+	}
+	if summary.Survived != 1 {
+		t.Errorf("expected 1 survived mutant, got %d (killed=%d)", summary.Survived, summary.Killed)
+	}
+	if summary.Killed != 0 {
+		t.Errorf("expected 0 killed, got %d", summary.Killed)
+	}
+}
+
+// TestRun_NoTestFiles covers F3: a package with no test files cannot have a
+// perfect score. Its mutants must SURVIVE and the run must fail. Before the
+// fix, the missing test binary made every mutant a false KILLED / Score 100%.
+func TestRun_NoTestFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeFiles(t, tmpDir, map[string]string{
+		"go.mod":        "module example.com/notestmod\n\ngo 1.21\n",
+		"notest/lib.go": "package notest\n\nfunc Max(a, b int) int {\n\tif a > b {\n\t\treturn a\n\t}\n\treturn b\n}\n",
+	})
+
+	chdir(t, tmpDir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := config.Config{
+		Patterns: []string{"./notest"},
+		Workers:  1,
+		Timeout:  30 * time.Second,
+	}
+
+	err := run(context.Background(), cfg, &stdout, &stderr)
+	out := stdout.String()
+
+	requireIs(t, err, ErrTestsFailed)
+	if !strings.Contains(out, "has no test files") {
+		t.Errorf("expected 'has no test files' notice, got: %s", out)
+	}
+	if !strings.Contains(out, "SURVIVED") {
+		t.Errorf("expected SURVIVED marker, got: %s", out)
+	}
+}
+
+// TestRun_BaselineFailure covers F4: if tests fail without any mutation, the
+// run must abort with ErrBaseline and never run mutants. Before the fix, the
+// always-failing test made every mutant a false KILLED / Score 100% / exit 0.
+func TestRun_BaselineFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeFiles(t, tmpDir, map[string]string{
+		"go.mod":         "module example.com/failmod\n\ngo 1.21\n",
+		"failing/lib.go": "package failing\n\nfunc Positive(n int) bool { return n > 0 }\n",
+		"failing/lib_test.go": `package failing
+
+import "testing"
+
+func TestAlwaysFails(t *testing.T) {
+	t.Fatal("this test is broken and fails regardless of mutations")
+}
+`,
+	})
+
+	chdir(t, tmpDir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := config.Config{
+		Patterns: []string{"./failing"},
+		Workers:  1,
+		Timeout:  30 * time.Second,
+	}
+
+	err := run(context.Background(), cfg, &stdout, &stderr)
+	requireIs(t, err, ErrBaseline)
+
+	out := stdout.String()
+	if strings.Contains(out, "Mutation Testing Summary") {
+		t.Errorf("baseline failure must not print a summary, got: %s", out)
+	}
+	if strings.Contains(out, "--- KILLED:") || strings.Contains(out, "--- SURVIVED:") {
+		t.Errorf("baseline failure must not run mutants, got: %s", out)
+	}
+}
+
+// TestBaselineErr covers the classification of VerifyBaseline failures: a
+// genuine failure is ErrBaseline, but a failure observed after the run
+// context was canceled (e.g. SIGINT during the baseline run) must be
+// reported as ErrInterrupted — the user's tests are not actually broken.
+func TestBaselineErr(t *testing.T) {
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tests := []struct {
+		name    string
+		ctx     context.Context
+		err     error
+		want    error
+		notWant error
+	}{
+		{
+			name:    "genuine failure is ErrBaseline",
+			ctx:     context.Background(),
+			err:     errors.New("package p: baseline tests failed"),
+			want:    ErrBaseline,
+			notWant: ErrInterrupted,
+		},
+		{
+			name:    "canceled ctx is ErrInterrupted",
+			ctx:     canceledCtx,
+			err:     errors.New("signal: killed"),
+			want:    ErrInterrupted,
+			notWant: ErrBaseline,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := baselineErr(tt.ctx, tt.err)
+			requireIs(t, got, tt.want)
+			if errors.Is(got, tt.notWant) {
+				t.Errorf("baselineErr() = %v, must not match %v", got, tt.notWant)
+			}
+		})
+	}
+}
+
+// TestRun_AllKilled_ReturnsNil asserts the success path of the default mode:
+// when every mutant is killed (Survived == 0 and Errors == 0), run() must
+// return nil. This pins the exact `> 0` boundaries of the exit condition and
+// that a package with tests is never misflagged as having none.
+func TestRun_AllKilled_ReturnsNil(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeFiles(t, tmpDir, map[string]string{
+		"go.mod": "module example.com/allkilled\n\ngo 1.21\n",
+		"lib.go": "package allkilled\n\nfunc Threshold(n int) bool { return n > 10 }\n",
+		"lib_test.go": `package allkilled
+
+import "testing"
+
+func TestThreshold(t *testing.T) {
+	// Full boundary coverage: 11 vs 10 kills the > to >= mutant.
+	if !Threshold(11) || Threshold(10) {
+		t.Fatal("wrong")
+	}
+}
+`,
+	})
+
+	chdir(t, tmpDir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := config.Config{
+		Patterns: []string{"./..."},
+		Workers:  1,
+		Timeout:  30 * time.Second,
+		JSON:     true,
+	}
+
+	err := run(context.Background(), cfg, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("expected nil error when all mutants are killed, got %v\nstderr: %s", err, stderr.String())
+	}
+
+	var summary output.JSONSummary
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
+		t.Fatalf("invalid JSON: %v\nstdout: %s", err, stdout.String())
+	}
+	if summary.Total != 1 || summary.Killed != 1 {
+		t.Errorf("expected total=1 killed=1, got total=%d killed=%d", summary.Total, summary.Killed)
+	}
+	if summary.Survived != 0 || summary.Errors != 0 {
+		t.Errorf("expected survived=0 errors=0, got survived=%d errors=%d", summary.Survived, summary.Errors)
 	}
 }
 

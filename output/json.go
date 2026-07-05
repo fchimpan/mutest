@@ -33,6 +33,7 @@ type JSONResult struct {
 	Desc     string `json:"desc"`
 	Duration string `json:"duration"`
 	TimedOut bool   `json:"timed_out,omitempty"`
+	Canceled bool   `json:"canceled,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
 
@@ -43,6 +44,7 @@ type JSONSummary struct {
 	TimedOut int          `json:"timed_out"`
 	Survived int          `json:"survived"`
 	Errors   int          `json:"errors"`
+	Canceled int          `json:"canceled"`
 	KillRate float64      `json:"kill_rate"`
 	Duration string       `json:"duration"`
 	Results  []JSONResult `json:"results"`
@@ -51,7 +53,9 @@ type JSONSummary struct {
 // ToJSONResult converts a runner.Result into the JSON wire format.
 func ToJSONResult(r runner.Result, rpc *RelPathCache) JSONResult {
 	status := "survived"
-	if r.Err != nil {
+	if r.Canceled {
+		status = "canceled"
+	} else if r.Err != nil {
 		status = "error"
 	} else if r.TimedOut {
 		status = "timeout"
@@ -69,6 +73,7 @@ func ToJSONResult(r runner.Result, rpc *RelPathCache) JSONResult {
 		Desc:     r.Point.Desc,
 		Duration: r.Duration.Round(time.Millisecond).String(),
 		TimedOut: r.TimedOut,
+		Canceled: r.Canceled,
 	}
 	if r.Err != nil {
 		jr.Error = r.Err.Error()
@@ -96,6 +101,7 @@ func WriteJSONSummary(w io.Writer, s *runner.Summary, rpc *RelPathCache, include
 		TimedOut: s.TimedOut,
 		Survived: s.Survived,
 		Errors:   s.Errors,
+		Canceled: s.Canceled,
 		KillRate: math.Round(killRate*10) / 10,
 		Duration: s.Duration.Round(time.Millisecond).String(),
 		Results:  results,

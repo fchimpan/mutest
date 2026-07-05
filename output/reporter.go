@@ -100,6 +100,8 @@ func (r *Reporter) Summary(s *runner.Summary) {
 
 func statusOf(r runner.Result) string {
 	switch {
+	case r.Canceled:
+		return "CANCELED"
 	case r.Err != nil:
 		return "ERROR"
 	case r.TimedOut:
