@@ -694,6 +694,55 @@ func TestBaselineErr(t *testing.T) {
 	}
 }
 
+// TestRun_AllKilled_ReturnsNil asserts the success path of the default mode:
+// when every mutant is killed (Survived == 0 and Errors == 0), run() must
+// return nil. This pins the exact `> 0` boundaries of the exit condition and
+// that a package with tests is never misflagged as having none.
+func TestRun_AllKilled_ReturnsNil(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeFiles(t, tmpDir, map[string]string{
+		"go.mod": "module example.com/allkilled\n\ngo 1.21\n",
+		"lib.go": "package allkilled\n\nfunc Threshold(n int) bool { return n > 10 }\n",
+		"lib_test.go": `package allkilled
+
+import "testing"
+
+func TestThreshold(t *testing.T) {
+	// Full boundary coverage: 11 vs 10 kills the > to >= mutant.
+	if !Threshold(11) || Threshold(10) {
+		t.Fatal("wrong")
+	}
+}
+`,
+	})
+
+	chdir(t, tmpDir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := config.Config{
+		Patterns: []string{"./..."},
+		Workers:  1,
+		Timeout:  30 * time.Second,
+		JSON:     true,
+	}
+
+	err := run(context.Background(), cfg, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("expected nil error when all mutants are killed, got %v\nstderr: %s", err, stderr.String())
+	}
+
+	var summary output.JSONSummary
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
+		t.Fatalf("invalid JSON: %v\nstdout: %s", err, stdout.String())
+	}
+	if summary.Total != 1 || summary.Killed != 1 {
+		t.Errorf("expected total=1 killed=1, got total=%d killed=%d", summary.Total, summary.Killed)
+	}
+	if summary.Survived != 0 || summary.Errors != 0 {
+		t.Errorf("expected survived=0 errors=0, got survived=%d errors=%d", summary.Survived, summary.Errors)
+	}
+}
+
 func TestRun_EqualityMutator_Discovered(t *testing.T) {
 	tmpDir := t.TempDir()
 	for name, content := range map[string]string{

@@ -2,6 +2,7 @@ package output
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,41 @@ func TestPrintReport_Canceled(t *testing.T) {
 	}
 	if strings.Contains(out, "Survived mutants") {
 		t.Errorf("canceled mutants must not be listed as survived, got: %s", out)
+	}
+}
+
+func TestPrintReport_NoCanceledLineWhenZero(t *testing.T) {
+	var buf bytes.Buffer
+	summary := &runner.Summary{
+		Total:    2,
+		Killed:   2,
+		Duration: 100 * time.Millisecond,
+	}
+
+	PrintReport(&buf, summary, NewRelPathCache("/base"))
+
+	if strings.Contains(buf.String(), "Canceled:") {
+		t.Errorf("Canceled line must be omitted when Canceled == 0, got: %s", buf.String())
+	}
+}
+
+func TestPrintReport_ErroredNotListedAsSurvived(t *testing.T) {
+	var buf bytes.Buffer
+	summary := &runner.Summary{
+		Total:    2,
+		Killed:   1,
+		Errors:   1,
+		Duration: 100 * time.Millisecond,
+		Results: []runner.Result{
+			{Point: mutator.MutationPoint{File: "/base/a.go", Line: 1, Column: 1, Desc: "> to >="}, Killed: true},
+			{Point: mutator.MutationPoint{File: "/base/b.go", Line: 2, Column: 1, Desc: "< to <="}, Err: errors.New("exec failed")},
+		},
+	}
+
+	PrintReport(&buf, summary, NewRelPathCache("/base"))
+
+	if strings.Contains(buf.String(), "Survived mutants") {
+		t.Errorf("errored results must not be listed as survived, got: %s", buf.String())
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -353,4 +354,63 @@ func TestVerifyBaseline(t *testing.T) {
 			t.Errorf("baseline must neutralize inherited MUTEST_ID; got %v", err)
 		}
 	})
+}
+
+func TestTestArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want []string
+	}{
+		{
+			name: "without run filter",
+			cfg:  Config{Timeout: 30 * time.Second},
+			want: []string{"-test.failfast", "-test.count=1", "-test.timeout=30s"},
+		},
+		{
+			name: "with run filter",
+			cfg:  Config{Timeout: time.Minute, Run: "TestFoo"},
+			want: []string{"-test.failfast", "-test.count=1", "-test.timeout=1m0s", "-test.run", "TestFoo"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := testArgs(tt.cfg); !slices.Equal(got, tt.want) {
+				t.Errorf("testArgs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTrimBaselineOutput(t *testing.T) {
+	atLimit := strings.Repeat("a", 2000)
+	overLimit := strings.Repeat("b", 2001)
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "trailing newlines trimmed",
+			in:   "test output\n\n",
+			want: "test output",
+		},
+		{
+			name: "exactly at limit is not truncated",
+			in:   atLimit,
+			want: atLimit,
+		},
+		{
+			name: "over limit keeps tail with truncation marker",
+			in:   overLimit,
+			want: "...(truncated)...\n" + overLimit[1:],
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := trimBaselineOutput([]byte(tt.in)); got != tt.want {
+				t.Errorf("trimBaselineOutput() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
