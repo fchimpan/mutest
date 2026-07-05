@@ -356,6 +356,12 @@ func TestVerifyBaseline(t *testing.T) {
 	})
 }
 
+// TestTestArgs covers F12: the in-binary `-test.timeout` must exceed
+// cfg.Timeout by a fixed backstop margin (5s), not equal it. If the two
+// timeouts raced at the same value, a binary-internal timeout firing first
+// would panic the test binary (an *exec.ExitError), which the runner's
+// classifier (F1) would then misreport as KILLED instead of TimedOut. Padding
+// -test.timeout guarantees the context (cfg.Timeout) always fires first.
 func TestTestArgs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -365,12 +371,12 @@ func TestTestArgs(t *testing.T) {
 		{
 			name: "without run filter",
 			cfg:  Config{Timeout: 30 * time.Second},
-			want: []string{"-test.failfast", "-test.count=1", "-test.timeout=30s"},
+			want: []string{"-test.failfast", "-test.count=1", "-test.timeout=35s"},
 		},
 		{
 			name: "with run filter",
 			cfg:  Config{Timeout: time.Minute, Run: "TestFoo"},
-			want: []string{"-test.failfast", "-test.count=1", "-test.timeout=1m0s", "-test.run", "TestFoo"},
+			want: []string{"-test.failfast", "-test.count=1", "-test.timeout=1m5s", "-test.run", "TestFoo"},
 		},
 	}
 	for _, tt := range tests {

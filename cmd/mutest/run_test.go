@@ -483,6 +483,45 @@ func TestRun_Threshold_NotMet(t *testing.T) {
 	}
 }
 
+// TestRun_Threshold_ExactBoundary_Passes covers F11's comparison operator: a
+// kill rate exactly equal to -threshold must PASS. -threshold is documented
+// as a *minimum* acceptable rate ("exit 1 if below"), so equality must not
+// fail. This also pins `<` against `<=`: with a mutated `<=`, a rate exactly
+// at the threshold would wrongly fail.
+func TestRun_Threshold_ExactBoundary_Passes(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeFiles(t, tmpDir, map[string]string{
+		"go.mod": "module example.com/boundary\n\ngo 1.21\n",
+		"lib.go": "package boundary\n\nfunc Threshold(n int) bool { return n > 10 }\n",
+		"lib_test.go": `package boundary
+
+import "testing"
+
+func TestThreshold(t *testing.T) {
+	// Full boundary coverage: the single mutant is killed, so the kill rate
+	// is exactly 100%.
+	if !Threshold(11) || Threshold(10) {
+		t.Fatal("wrong")
+	}
+}
+`,
+	})
+
+	chdir(t, tmpDir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := config.Config{
+		Patterns:  []string{"./..."},
+		Workers:   1,
+		Timeout:   30 * time.Second,
+		Threshold: 100.0, // exactly matches the 100% kill rate produced above
+	}
+
+	if err := run(context.Background(), cfg, &stdout, &stderr); err != nil {
+		t.Errorf("expected nil error when kill rate exactly equals threshold, got %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+}
+
 func TestRun_Threshold_Zero_DefaultBehavior(t *testing.T) {
 	chdir(t, "../../testdata/project")
 

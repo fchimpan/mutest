@@ -280,6 +280,44 @@ func TestBuildTestBinary_NoTestsDetection(t *testing.T) {
 	}
 }
 
+// TestInstrumentAll_ExistingRuntimeFileErrors covers F14: instrumentPackage
+// injects its generated runtime helpers at the virtual path
+// pkgDir/mutest_runtime.go via the overlay. If a file with that exact name
+// already exists in the package, the overlay would silently replace it
+// (dropping whatever the user's file declared) instead of failing loudly.
+// InstrumentAll must return an explicit error naming the collision instead.
+func TestInstrumentAll_ExistingRuntimeFileErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod":            "module example.com/collide\n\ngo 1.21\n",
+		"lib.go":            "package collide\n\nfunc Positive(n int) bool { return n > 0 }\n",
+		"mutest_runtime.go": "package collide\n\n// userDefined is a real file that happens to share mutest's\n// generated-runtime filename.\nfunc userDefined() int { return 42 }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, tmpDir)
+
+	eng := New([]string{"./..."}, &mutator.ComparisonMutator{})
+	points, err := eng.DiscoverAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) == 0 {
+		t.Fatal("expected at least 1 mutation point")
+	}
+
+	pkgs, err := eng.InstrumentAll(points)
+	if err == nil {
+		t.Cleanup(func() { CleanupInstrumented(pkgs) })
+		t.Fatal("expected an error because mutest_runtime.go already exists in the package")
+	}
+	if !strings.Contains(err.Error(), "mutest_runtime.go") {
+		t.Errorf("expected error to mention mutest_runtime.go, got: %v", err)
+	}
+}
+
 func TestInstrumentFile_NoNesting(t *testing.T) {
 	// a > b without nesting should still work as before.
 	src := []byte(`package repro

@@ -318,7 +318,21 @@ func compare(a, b int) int {
 }
 ```
 
-> **Note:** When `//mutest:skip` is placed on a block statement (`if`/`for`/`switch`/`select`), it skips the entire block including nested statements. On any other line, it skips only that line.
+**Standalone-line skip** — add `//mutest:skip` alone on its own line (nothing but whitespace before it) to skip the line that follows — or the entire block, if that following line begins one (`if`/`for`/`switch`/`select`):
+
+```go
+func compare(a, b int) int {
+    //mutest:skip
+    if a > b {
+        return 1 // part of the skipped block
+    }
+    //mutest:skip
+    result := a < b // this mutation will be skipped too
+    return boolToInt(result)
+}
+```
+
+> **Note:** When `//mutest:skip` is placed on a block statement (`if`/`for`/`switch`/`select`), it skips the entire block including nested statements. At the end of any other line, it skips only that line. Placed alone on its own line, it skips the line immediately following it (the whole block, if that line opens one) — it never affects its own comment-only line, since there is no code there to skip.
 
 ### Dry-Run Mode
 

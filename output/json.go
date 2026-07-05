@@ -3,7 +3,6 @@ package output
 import (
 	"encoding/json"
 	"io"
-	"math"
 	"time"
 
 	"github.com/fchimpan/mutest/mutator"
@@ -85,8 +84,6 @@ func ToJSONResult(r runner.Result, rpc *RelPathCache) JSONResult {
 // is false, the per-mutant Results slice is omitted (used for verbose NDJSON
 // streaming where individual results were already emitted).
 func WriteJSONSummary(w io.Writer, s *runner.Summary, rpc *RelPathCache, includeResults bool) {
-	killRate := CalcKillRate(s)
-
 	var results []JSONResult
 	if includeResults {
 		results = make([]JSONResult, len(s.Results))
@@ -102,7 +99,7 @@ func WriteJSONSummary(w io.Writer, s *runner.Summary, rpc *RelPathCache, include
 		Survived: s.Survived,
 		Errors:   s.Errors,
 		Canceled: s.Canceled,
-		KillRate: math.Round(killRate*10) / 10,
+		KillRate: RoundedKillRate(s),
 		Duration: s.Duration.Round(time.Millisecond).String(),
 		Results:  results,
 	}

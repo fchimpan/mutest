@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -104,7 +105,7 @@ func (e *Engine) DiscoverAll() ([]mutator.MutationPoint, error) {
 		e.sourceCache[path] = src
 		pkg := file.Name.Name
 		importPath := e.importPaths[path]
-		si := buildSkipInfo(fset, file)
+		si := buildSkipInfo(fset, file, src)
 
 		for _, m := range e.mutators {
 			pts := m.Discover(fset, file, path, pkg)
@@ -128,6 +129,10 @@ func (e *Engine) resolveFiles() ([]string, error) {
 	cmd := exec.Command("go", args...)
 	out, err := cmd.Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil, fmt.Errorf("go list: %s", bytes.TrimSpace(exitErr.Stderr))
+		}
 		return nil, err
 	}
 
@@ -165,9 +170,14 @@ type lineRange struct {
 // also unconditionally excludes every `const` declaration (see
 // buildConstRanges). A directive on a function's doc comment skips the
 // entire function body. A directive on a block statement (if/for/switch/select)
-// skips the entire block. A directive on any other line skips mutations on
-// that specific line.
-func buildSkipInfo(fset *token.FileSet, file *ast.File) *skipInfo {
+// skips the entire block. A directive at the end of a line of code skips
+// mutations on that specific line. A directive alone on its own line (a
+// natural but previously silent misuse) skips the line that follows instead
+// — and, if that following line begins a block statement, the entire block —
+// since a standalone comment has no code of its own to attach to. src is the
+// same source bytes the file was parsed from; it is needed to tell a
+// standalone comment apart from one at the end of a line of code.
+func buildSkipInfo(fset *token.FileSet, file *ast.File, src []byte) *skipInfo {
 	si := &skipInfo{
 		lines: make(map[int]bool),
 	}
@@ -194,13 +204,23 @@ func buildSkipInfo(fset *token.FileSet, file *ast.File) *skipInfo {
 	// Line-level and block-level: all comments with mutest:skip
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			if strings.Contains(c.Text, "mutest:skip") {
-				line := fset.Position(c.Pos()).Line
-				si.lines[line] = true
-				// If this line is the start of a block statement, skip the whole block.
-				if r, ok := blockRanges[line]; ok {
-					si.ranges = append(si.ranges, r)
-				}
+			if !strings.Contains(c.Text, "mutest:skip") {
+				continue
+			}
+			line := fset.Position(c.Pos()).Line
+			si.lines[line] = true
+
+			target := line
+			if isStandaloneComment(fset, c.Pos(), src) {
+				// Nothing precedes the comment on its own line, so the
+				// directive cannot mean "skip this line" (there is no code
+				// on it); apply it to the line that follows instead.
+				target = line + 1
+				si.lines[target] = true
+			}
+			// If the target line is the start of a block statement, skip the whole block.
+			if r, ok := blockRanges[target]; ok {
+				si.ranges = append(si.ranges, r)
 			}
 		}
 	}
@@ -210,6 +230,23 @@ func buildSkipInfo(fset *token.FileSet, file *ast.File) *skipInfo {
 	si.ranges = append(si.ranges, buildConstRanges(fset, file)...)
 
 	return si
+}
+
+// isStandaloneComment reports whether the comment at pos sits alone on its
+// source line — i.e. everything before it on that line is whitespace — as
+// opposed to being appended to the end of a line of code. src must be the
+// same source bytes pos was parsed from (buildSkipInfo's contract), so the
+// line-start and comment offsets derived from pos's *token.File are
+// guaranteed valid byte indices into src: no additional bounds checking is
+// needed beyond the nil guard for a pos outside fset.
+func isStandaloneComment(fset *token.FileSet, pos token.Pos, src []byte) bool {
+	tf := fset.File(pos)
+	if tf == nil {
+		return false
+	}
+	lineStart := tf.Offset(tf.LineStart(tf.Line(pos)))
+	commentStart := tf.Offset(pos)
+	return len(bytes.TrimSpace(src[lineStart:commentStart])) == 0
 }
 
 // buildConstRanges returns the line range of every `const` declaration
