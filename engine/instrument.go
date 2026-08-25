@@ -30,10 +30,9 @@ type InstrumentedPackage struct {
 	OverlayPath string
 }
 
-// helperSpec describes a generated mutation helper function.
+// helperSpec describes a generated _mutest_cmp_N helper function.
 type helperSpec struct {
 	ID       int
-	Kind     string // "cmp" (cmp.Ordered), "eq" (comparable), or "inline" (nil comparisons)
 	Original token.Token
 	Mutated  token.Token
 }
@@ -170,15 +169,13 @@ type mutTarget struct {
 	xStart, xEnd int // byte offsets in original source for LHS operand
 	yStart, yEnd int // byte offsets in original source for RHS operand
 	point        mutator.MutationPoint
-	isNil        bool // true when one operand is nil (uses inline func)
-	kind         string
 }
 
 // fullStart/fullEnd returns the byte range of the entire binary expression.
 func (t *mutTarget) fullStart() int { return t.xStart }
 func (t *mutTarget) fullEnd() int   { return t.yEnd }
 
-// instrumentFile replaces mutation target expressions with helper function calls.
+// instrumentFile replaces mutation target expressions with instrumented forms.
 // Nested binary expressions (e.g., `(a > b) == flag`) are handled by building
 // replacement text bottom-up: inner replacements are embedded in outer ones.
 func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint) ([]byte, []helperSpec, error) {
@@ -207,24 +204,24 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 
 		key := nodeKey{nodeID, bin.Op}
 		if pt, exists := pointByKey[key]; exists {
-			kind := "cmp"
-			if pt.Original == token.EQL || pt.Original == token.NEQ {
-				kind = "eq"
-			}
 			targets = append(targets, mutTarget{
 				xStart: fset.Position(bin.X.Pos()).Offset,
 				xEnd:   fset.Position(bin.X.End()).Offset,
 				yStart: fset.Position(bin.Y.Pos()).Offset,
 				yEnd:   fset.Position(bin.Y.End()).Offset,
 				point:  pt,
-				isNil:  isNilIdent(bin.X) || isNilIdent(bin.Y),
-				kind:   kind,
 			})
 		}
 
 		nodeID++
 		return true
 	})
+
+	// A point that matched no AST node would be scheduled by the runner as a
+	// no-op mutant and silently reported SURVIVED; fail loudly instead.
+	if len(targets) != len(points) {
+		return nil, nil, fmt.Errorf("only %d of %d mutation points matched an AST node", len(targets), len(points))
+	}
 
 	// Phase 2: Build replacement text bottom-up (innermost first).
 	// Sort by range size ascending so inner targets are processed first.
@@ -248,14 +245,23 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 		rhs := textWithInnerRepls(src, t.yStart, t.yEnd, builtRepls)
 
 		var callExpr string
-		if t.isNil {
-			callExpr = fmt.Sprintf("func() bool { _mutest_init(); if _mutest_active == %d { return %s %s %s }; return %s %s %s }()",
-				pt.MutestID, lhs, pt.Mutated.String(), rhs, lhs, pt.Original.String(), rhs)
-			helpers = append(helpers, helperSpec{ID: pt.MutestID, Kind: "inline", Original: pt.Original, Mutated: pt.Mutated})
+		if pt.Original == token.EQL || pt.Original == token.NEQ {
+			// Equality operands may legally have different static types
+			// (e.g. `any == error`), which a one-type-parameter generic
+			// helper cannot infer, and moving them into a helper or closure
+			// would change meaning: `any`-boxing makes named-vs-unnamed
+			// concrete types compare unequal, and recover() stops a panic
+			// only when called directly by a deferred function. Since the
+			// mutation is exactly a negation, XOR the original comparison —
+			// left verbatim in place, evaluated once — with the mutation
+			// switch. A comparison also yields an untyped bool, so
+			// defined-bool-type contexts keep compiling.
+			callExpr = fmt.Sprintf("(%s %s %s) != _mutest_on(%d)", lhs, pt.Original.String(), rhs, pt.MutestID)
 		} else {
-			funcName := fmt.Sprintf("_mutest_%s_%d", t.kind, pt.MutestID)
-			callExpr = fmt.Sprintf("%s(%s, %s)", funcName, lhs, rhs)
-			helpers = append(helpers, helperSpec{ID: pt.MutestID, Kind: t.kind, Original: pt.Original, Mutated: pt.Mutated})
+			// Ordered mutations are not negations (`>` vs `>=`), so they go
+			// through a generic helper instead.
+			callExpr = fmt.Sprintf("_mutest_cmp_%d(%s, %s)", pt.MutestID, lhs, rhs)
+			helpers = append(helpers, helperSpec{ID: pt.MutestID, Original: pt.Original, Mutated: pt.Mutated})
 		}
 
 		builtRepls[[2]int{t.fullStart(), t.fullEnd()}] = replacement{
@@ -347,28 +353,14 @@ func textWithInnerRepls(src []byte, start, end int, built map[[2]int]replacement
 	return buf.String()
 }
 
-// isNilIdent returns true if the expression is the identifier "nil".
-func isNilIdent(expr ast.Expr) bool {
-	ident, ok := expr.(*ast.Ident)
-	return ok && ident.Name == "nil"
-}
-
 // generateRuntime generates the mutest_runtime.go file content.
 func generateRuntime(pkg string, helpers []helperSpec) []byte {
 	var b strings.Builder
 
 	b.WriteString("package " + pkg + "\n\n")
 
-	needsCmp := false
-	for _, h := range helpers {
-		if h.Kind == "cmp" {
-			needsCmp = true
-			break
-		}
-	}
-
 	b.WriteString("import (\n")
-	if needsCmp {
+	if len(helpers) > 0 {
 		b.WriteString("\t\"cmp\"\n")
 	}
 	b.WriteString("\t\"os\"\n")
@@ -388,18 +380,16 @@ func generateRuntime(pkg string, helpers []helperSpec) []byte {
 	b.WriteString("\t\t\t_mutest_active, _ = strconv.Atoi(s)\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t})\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("func _mutest_on(id int) bool {\n")
+	b.WriteString("\t_mutest_init()\n")
+	b.WriteString("\treturn _mutest_active == id\n")
 	b.WriteString("}\n")
 
 	for _, h := range helpers {
-		if h.Kind == "inline" {
-			continue
-		}
 		b.WriteString("\n")
-		if h.Kind == "cmp" {
-			fmt.Fprintf(&b, "func _mutest_cmp_%d[T cmp.Ordered](a, b T) bool {\n", h.ID)
-		} else {
-			fmt.Fprintf(&b, "func _mutest_eq_%d[T comparable](a, b T) bool {\n", h.ID)
-		}
+		fmt.Fprintf(&b, "func _mutest_cmp_%d[T cmp.Ordered](a, b T) bool {\n", h.ID)
 		b.WriteString("\t_mutest_init()\n")
 		fmt.Fprintf(&b, "\tif _mutest_active == %d {\n", h.ID)
 		fmt.Fprintf(&b, "\t\treturn a %s b\n", h.Mutated.String())

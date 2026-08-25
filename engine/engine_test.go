@@ -430,9 +430,8 @@ func RuntimeCheck(n int) bool { return n > 5 }
 }
 
 // TestCheckGoVersion covers F9: the target module's go directive must be
-// >= 1.20 (mutest's generated helpers use generics and interfaces
-// satisfying comparable, both of which require Go 1.20+). A module with no
-// reported GoVersion (e.g. GOPATH mode) must be skipped, not rejected.
+// >= 1.20, mutest's published floor. A module with no reported GoVersion
+// (e.g. GOPATH mode) must be skipped, not rejected.
 func TestCheckGoVersion(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -10,6 +11,13 @@ import (
 
 	"github.com/fchimpan/mutest/mutator"
 )
+
+func mustParseInstrumented(t *testing.T, out []byte) {
+	t.Helper()
+	if _, err := parser.ParseFile(token.NewFileSet(), "instrumented.go", out, 0); err != nil {
+		t.Fatalf("instrumented output does not parse: %v\n%s", err, out)
+	}
+}
 
 func TestInstrumentFile_NestedBinaryExpr(t *testing.T) {
 	// (a > b) == flag: both > and == should be instrumented.
@@ -49,23 +57,16 @@ func Foo(a, b int, flag bool) bool {
 	}
 
 	result := string(out)
+	mustParseInstrumented(t, out)
 
-	// Both mutations should be instrumented.
-	if !strings.Contains(result, "_mutest_eq_2") {
-		t.Errorf("expected outer == to be instrumented, got:\n%s", result)
-	}
-	if !strings.Contains(result, "_mutest_cmp_1") {
-		t.Errorf("expected inner > to be instrumented (nested in outer), got:\n%s", result)
-	}
-
-	// The inner call should appear inside the outer call's LHS argument.
-	if !strings.Contains(result, "_mutest_eq_2(_mutest_cmp_1(a, b), flag)") &&
-		!strings.Contains(result, "_mutest_eq_2((_mutest_cmp_1(a, b)), flag)") {
-		t.Errorf("expected inner > call nested in outer == call, got:\n%s", result)
+	// Both mutations should be instrumented, the inner > call nested inside
+	// the outer == flip.
+	if !strings.Contains(result, "((_mutest_cmp_1(a, b)) == flag) != _mutest_on(2)") {
+		t.Errorf("expected inner > call nested in outer == flip, got:\n%s", result)
 	}
 
-	if len(helpers) != 2 {
-		t.Errorf("expected 2 helpers, got %d", len(helpers))
+	if len(helpers) != 1 {
+		t.Errorf("expected 1 cmp helper, got %d", len(helpers))
 	}
 }
 
@@ -116,22 +117,16 @@ func Bar(x, y *int) bool {
 	}
 
 	result := string(out)
+	mustParseInstrumented(t, out)
 
-	// All three should be present.
-	// Inner != are nil comparisons → inline funcs with _mutest_active == N.
-	if !strings.Contains(result, "_mutest_active == 1") {
-		t.Errorf("expected left != (ID=1) to be instrumented, got:\n%s", result)
-	}
-	if !strings.Contains(result, "_mutest_active == 3") {
-		t.Errorf("expected right != (ID=3) to be instrumented, got:\n%s", result)
-	}
-	// Outer == is a non-nil comparison → helper func _mutest_eq_2.
-	if !strings.Contains(result, "_mutest_eq_2") {
-		t.Errorf("expected outer == (ID=2) to be instrumented as _mutest_eq_2, got:\n%s", result)
+	// All three flips should be present, each ID bound to its own site.
+	want := "(((x != nil) != _mutest_on(1)) == ((y != nil) != _mutest_on(3))) != _mutest_on(2)"
+	if !strings.Contains(result, want) {
+		t.Errorf("expected %s, got:\n%s", want, result)
 	}
 
-	if len(helpers) != 3 {
-		t.Errorf("expected 3 helpers, got %d", len(helpers))
+	if len(helpers) != 0 {
+		t.Errorf("expected 0 cmp helpers, got %d", len(helpers))
 	}
 }
 
@@ -181,26 +176,119 @@ func Baz(a, b int, flag, expected bool) bool {
 	}
 
 	result := string(out)
+	mustParseInstrumented(t, out)
 
-	// All three mutations should be present.
-	if !strings.Contains(result, "_mutest_cmp_1") {
-		t.Errorf("expected innermost > to be instrumented, got:\n%s", result)
-	}
-	if !strings.Contains(result, "_mutest_eq_2") {
-		t.Errorf("expected middle == to be instrumented, got:\n%s", result)
-	}
-	if !strings.Contains(result, "_mutest_eq_3") {
-		t.Errorf("expected outermost != to be instrumented, got:\n%s", result)
+	// All three mutations should be present, nested innermost to outermost.
+	want := "((((_mutest_cmp_1(a, b)) == flag) != _mutest_on(2)) != expected) != _mutest_on(3)"
+	if !strings.Contains(result, want) {
+		t.Errorf("expected %s, got:\n%s", want, result)
 	}
 
-	// Verify nesting: cmp_1 inside eq_2 inside eq_3
-	if !strings.Contains(result, "_mutest_eq_2(_mutest_cmp_1(a, b), flag)") &&
-		!strings.Contains(result, "_mutest_eq_2((_mutest_cmp_1(a, b)), flag)") {
-		t.Errorf("expected cmp_1 nested inside eq_2, got:\n%s", result)
+	if len(helpers) != 1 {
+		t.Errorf("expected 1 cmp helper, got %d", len(helpers))
+	}
+}
+
+// TestInstrumentFile_MixedTypeEquality covers issue #39: `any == error` is
+// legal Go, but a one-type-parameter generic helper cannot infer T from
+// operands of different static types, so the instrumented package failed
+// to build. The flip form keeps the original comparison untouched.
+func TestInstrumentFile_MixedTypeEquality(t *testing.T) {
+	src := []byte(`package repro
+
+import "net/http"
+
+func IsAbort(r any) bool {
+	return r == http.ErrAbortHandler
+}
+`)
+
+	points := []mutator.MutationPoint{
+		{
+			File:     "repro.go",
+			Package:  "repro",
+			NodeID:   0,
+			Original: token.EQL,
+			Mutated:  token.NEQ,
+			MutestID: 1,
+			Desc:     "== to !=",
+		},
 	}
 
-	if len(helpers) != 3 {
-		t.Errorf("expected 3 helpers, got %d", len(helpers))
+	out, helpers, err := instrumentFile(src, "repro.go", points)
+	if err != nil {
+		t.Fatalf("instrumentFile: %v", err)
+	}
+
+	result := string(out)
+	mustParseInstrumented(t, out)
+
+	if strings.Contains(result, "_mutest_eq_") {
+		t.Errorf("equality must not use a generic helper (breaks mixed-type inference), got:\n%s", result)
+	}
+	if !strings.Contains(result, "(r == http.ErrAbortHandler) != _mutest_on(1)") {
+		t.Errorf("expected flip preserving the original comparison, got:\n%s", result)
+	}
+	if len(helpers) != 0 {
+		t.Errorf("expected 0 cmp helpers, got %+v", helpers)
+	}
+}
+
+// TestInstrumentFile_RecoverOperand pins the flip form for position-sensitive
+// operands: recover() stops a panic only when called directly by a deferred
+// function, so instrumentation must not move the comparison into a nested
+// function literal.
+func TestInstrumentFile_RecoverOperand(t *testing.T) {
+	src := []byte(`package repro
+
+func Catch(sentinel any, f func()) (caught bool) {
+	defer func() {
+		if recover() == sentinel {
+			caught = true
+		}
+	}()
+	f()
+	return
+}
+`)
+
+	points := []mutator.MutationPoint{
+		{
+			File:     "repro.go",
+			Package:  "repro",
+			NodeID:   0,
+			Original: token.EQL,
+			Mutated:  token.NEQ,
+			MutestID: 1,
+			Desc:     "== to !=",
+		},
+	}
+
+	out, _, err := instrumentFile(src, "repro.go", points)
+	if err != nil {
+		t.Fatalf("instrumentFile: %v", err)
+	}
+
+	result := string(out)
+	mustParseInstrumented(t, out)
+
+	if !strings.Contains(result, "if (recover() == sentinel) != _mutest_on(1) {") {
+		t.Errorf("expected recover() to stay in the deferred function's frame, got:\n%s", result)
+	}
+}
+
+// TestGenerateRuntime_MutationSwitch pins the two runtime properties call
+// sites depend on: _mutest_on must read MUTEST_ID via _mutest_init before
+// comparing, and cmp must not be imported without cmp helpers (an unused
+// import would fail the build of every equality-only package).
+func TestGenerateRuntime_MutationSwitch(t *testing.T) {
+	runtime := string(generateRuntime("repro", nil))
+
+	if !strings.Contains(runtime, "func _mutest_on(id int) bool {\n\t_mutest_init()\n\treturn _mutest_active == id\n}") {
+		t.Errorf("expected initializing _mutest_on, got:\n%s", runtime)
+	}
+	if strings.Contains(runtime, `"cmp"`) {
+		t.Errorf("cmp must not be imported without cmp helpers, got:\n%s", runtime)
 	}
 }
 

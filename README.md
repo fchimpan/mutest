@@ -66,7 +66,7 @@ Pre-built binaries for Linux, macOS, and Windows are available on the [Releases]
 
 ### Requirements
 
-The **target module** — the code you run mutest against — must declare `go 1.20` or later in its `go.mod`. mutest's generated mutation helpers use generics and rely on interfaces satisfying `comparable`, both of which require Go 1.20+. mutest checks this before instrumenting anything and fails fast with a clear error if the module's `go` directive is too old, instead of an obscure compiler error. Modules with no reported Go version (e.g. GOPATH mode) are not checked.
+The **target module** — the code you run mutest against — must declare `go 1.20` or later in its `go.mod`; mutest's generated comparison helpers use generics. mutest checks this before instrumenting anything and fails fast with a clear error if the module's `go` directive is too old, instead of an obscure compiler error. Modules with no reported Go version (e.g. GOPATH mode) are not checked.
 
 ---
 
@@ -364,7 +364,7 @@ $ mutest -dry-run -json ./...
 
 1. **Parse** — `go/parser` builds an AST from every non-test `.go` file
 2. **Discover** — Walk the AST to find `ast.BinaryExpr` with `>`, `>=`, `<`, `<=`, `==`, `!=` (respecting `//mutest:skip`)
-3. **Instrument** — Replace each mutation target with a generic helper function call (e.g., `a > b` → `_mutest_cmp_1(a, b)`) and generate a runtime file that switches behavior based on `MUTEST_ID`
+3. **Instrument** — Replace each ordered comparison with a generic helper call (e.g., `a > b` → `_mutest_cmp_1(a, b)`) and each equality comparison with a flip of its result (`a == b` → `(a == b) != _mutest_on(1)`; the original comparison stays in place because its operands may legally have different static types, e.g. `any == error`), then generate a runtime file that switches behavior based on `MUTEST_ID`
 4. **Build** — Compile one test binary per package with all mutations embedded
 5. **Verify baseline** — Run each test binary once with **no** mutation active. If any package's tests fail without a mutation, mutest aborts (a broken or flaky suite would otherwise make every mutant a false KILLED)
 6. **Test** — Run the pre-built binary once per mutation with `MUTEST_ID=N`, in a parallel worker pool. Each binary runs with its package directory as the working directory, so `testdata` relative paths resolve
