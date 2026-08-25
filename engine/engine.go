@@ -37,16 +37,15 @@ type goModule struct {
 	GoVersion string `json:"GoVersion"`
 }
 
-// minTargetGoVersion is the lowest `go` directive mutest's generated
-// mutation helpers support: generics require Go 1.18+, and interfaces
-// satisfying the comparable constraint (used for equality helpers, e.g.
-// `error` operands) require Go 1.20+.
+// minTargetGoVersion is the lowest `go` directive mutest supports in target
+// modules: the generated cmp.Ordered helpers require generics (Go 1.18+),
+// and 1.20 is mutest's published floor.
 const minTargetGoVersion = "go1.20"
 
 // checkGoVersion fails fast if mod's go directive is older than mutest's
 // generated helpers require. Without this check, an old go directive
-// produces a confusing compiler error deep inside generated code (e.g.
-// "error does not satisfy comparable") instead of a clear diagnostic.
+// produces a confusing compiler error deep inside generated code instead
+// of a clear diagnostic.
 //
 // A nil mod, or one with an empty GoVersion (e.g. GOPATH mode, where `go
 // list -json` reports no Module at all), is skipped: there is nothing to
@@ -57,7 +56,7 @@ func checkGoVersion(mod *goModule) error {
 	}
 	found := "go" + mod.GoVersion
 	if version.Compare(found, minTargetGoVersion) < 0 {
-		return fmt.Errorf("mutest requires the target module's go directive to be >= 1.20 (found go %s in module %s); mutest's generated helpers use generics and interface-satisfies-comparable", mod.GoVersion, mod.Path)
+		return fmt.Errorf("mutest requires the target module's go directive to be >= 1.20 (found go %s in module %s)", mod.GoVersion, mod.Path)
 	}
 	return nil
 }

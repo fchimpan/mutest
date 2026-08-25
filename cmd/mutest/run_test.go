@@ -785,11 +785,7 @@ func TestThreshold(t *testing.T) {
 // TestRun_GoVersionTooOld covers F9: a target module whose go directive is
 // below 1.20 must fail fast with a clear diagnostic before instrumentation
 // or build, instead of surfacing a confusing compiler error deep inside
-// mutest's generated helpers. mutest's equality helper is instantiated as
-// `_mutest_eq_N[T comparable](a, b T)`; comparing two `error` interface
-// values (as below) reproduces the "interface satisfies comparable"
-// requirement that only compiles under go1.20+, so before this fix the
-// build itself fails under go1.19.
+// mutest's generated helpers.
 func TestRun_GoVersionTooOld(t *testing.T) {
 	tmpDir := t.TempDir()
 	writeFiles(t, tmpDir, map[string]string{
@@ -915,5 +911,131 @@ func TestRun_EqualityMutator_Discovered(t *testing.T) {
 	}
 	if points[0].Original != "==" || points[0].Mutated != "!=" {
 		t.Errorf("expected == to != mutation, got %s to %s", points[0].Original, points[0].Mutated)
+	}
+}
+
+// TestRun_MixedTypeEquality covers issue #39 end to end: equality operands
+// may legally have different static types (e.g. any == error), which the
+// old generic equality helper could not infer, aborting the whole package
+// at the build stage. The baseline is load-bearing: it fails unless
+// instrumentation preserves the original comparison's semantics exactly —
+// SamePtr catches any-conversion (equal named/unnamed pointers would
+// compare unequal via dynamic types) and Catch catches moving the operands
+// into a function literal (recover() inside a nested function no longer
+// stops the panic).
+func TestRun_MixedTypeEquality(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeFiles(t, tmpDir, map[string]string{
+		"go.mod": "module example.com/mixedeq\n\ngo 1.21\n",
+		"lib.go": `package mixedeq
+
+import (
+	"errors"
+	"io"
+	"os"
+)
+
+var ErrAbort error = errors.New("abort")
+
+func IsAbort(r any) bool { return r == ErrAbort }
+
+func IsStderr(w io.Writer) bool { return w == os.Stderr }
+
+type Animal interface{ Sound() string }
+
+type Dog interface {
+	Animal
+	Bark() string
+}
+
+func SameAnimal(d Dog, a Animal) bool { return d == a }
+
+type IntPtr *int
+
+func SamePtr(p IntPtr, q *int) bool { return p == q }
+
+func Catch(sentinel any, f func()) (caught bool) {
+	defer func() {
+		if recover() == sentinel {
+			caught = true
+		}
+	}()
+	f()
+	return
+}
+`,
+		"lib_test.go": `package mixedeq
+
+import (
+	"os"
+	"testing"
+)
+
+type dog struct{}
+
+func (dog) Sound() string { return "woof" }
+func (dog) Bark() string  { return "WOOF" }
+
+type cat struct{}
+
+func (cat) Sound() string { return "meow" }
+
+func TestIsAbort(t *testing.T) {
+	if IsAbort(42) || !IsAbort(ErrAbort) {
+		t.Fatal("wrong")
+	}
+}
+
+func TestIsStderr(t *testing.T) {
+	if !IsStderr(os.Stderr) || IsStderr(os.Stdout) {
+		t.Fatal("wrong")
+	}
+}
+
+func TestSameAnimal(t *testing.T) {
+	if !SameAnimal(dog{}, dog{}) || SameAnimal(dog{}, cat{}) {
+		t.Fatal("wrong")
+	}
+}
+
+func TestSamePtr(t *testing.T) {
+	n, m := 0, 0
+	if !SamePtr(&n, &n) || SamePtr(&n, &m) {
+		t.Fatal("wrong")
+	}
+}
+
+func TestCatch(t *testing.T) {
+	if !Catch("boom", func() { panic("boom") }) || Catch("boom", func() {}) {
+		t.Fatal("wrong")
+	}
+}
+`,
+	})
+
+	chdir(t, tmpDir)
+
+	var stdout, stderr bytes.Buffer
+	cfg := config.Config{
+		Patterns: []string{"./..."},
+		Workers:  2,
+		Timeout:  30 * time.Second,
+		JSON:     true,
+	}
+
+	err := run(context.Background(), cfg, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("expected nil error (all mixed-type mutants killed), got %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	var summary output.JSONSummary
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
+		t.Fatalf("invalid JSON: %v\nstdout: %s", err, stdout.String())
+	}
+	if summary.Total != 5 || summary.Killed != 5 {
+		t.Errorf("expected total=5 killed=5, got total=%d killed=%d", summary.Total, summary.Killed)
+	}
+	if summary.Survived != 0 || summary.Errors != 0 {
+		t.Errorf("expected survived=0 errors=0, got survived=%d errors=%d", summary.Survived, summary.Errors)
 	}
 }
