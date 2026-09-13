@@ -2,7 +2,9 @@ package output
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -199,6 +201,46 @@ func TestStatusOf(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := statusOf(tt.res); got != tt.want {
 				t.Errorf("statusOf() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+type failingOutput struct {
+	err   error
+	short bool
+	calls int
+}
+
+func (w *failingOutput) Write(p []byte) (int, error) {
+	w.calls++
+	if w.short {
+		return len(p) - 1, w.err
+	}
+	return len(p), w.err
+}
+
+func TestReporterRetainsFirstWriteFailure(t *testing.T) {
+	diskErr := errors.New("disk full")
+	for _, tt := range []struct {
+		name           string
+		short          bool
+		writeErr, want error
+	}{
+		{"short write", true, nil, io.ErrShortWrite},
+		{"partial failure", true, diskErr, diskErr},
+		{"full length failure", false, diskErr, diskErr},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			writer := &failingOutput{err: tt.writeErr, short: tt.short}
+			rep := NewReporter(config.Config{JSON: true}, writer, io.Discard, "/")
+			rep.NoMutationPoints()
+			if !errors.Is(rep.Err(), tt.want) {
+				t.Fatalf("lost output failure: %v", rep.Err())
+			}
+			rep.NoMutationPoints()
+			if writer.calls != 1 || !errors.Is(rep.Err(), tt.want) {
+				t.Fatalf("failure was not retained: calls=%d err=%v", writer.calls, rep.Err())
 			}
 		})
 	}

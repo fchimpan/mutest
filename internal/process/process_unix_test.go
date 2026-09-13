@@ -25,3 +25,15 @@ func TestCancellationStopsDescendants(t *testing.T) {
 		t.Fatal("descendant survived cancellation")
 	}
 }
+
+func TestNormalExitStopsRemainingDescendants(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "orphan")
+	cmd := Command(context.Background(), "sh", "-c", `(sleep 0.5; touch "$1") >/dev/null 2>&1 &`, "sh", marker)
+	if _, err := CombinedOutput(cmd, 1024); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(800 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("normal parent exit left a descendant running")
+	}
+}

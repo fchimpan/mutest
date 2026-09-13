@@ -266,7 +266,7 @@ func testMutantRuntime(ctx context.Context, pkg *engine.InstrumentedPackage, pt 
 	case err == nil:
 		// Tests passed with the mutation active: mutant survived.
 	case errors.As(err, &exitErr):
-		if exitErr.ExitCode() < 0 {
+		if !exitErr.ProcessState.Exited() {
 			r.Err = err
 		} else {
 			r.Killed = true

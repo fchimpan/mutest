@@ -43,7 +43,8 @@ func (b *tailBuffer) Write(p []byte) (int, error) {
 	n := len(p)
 	if len(b.data)+n > b.limit {
 		b.truncated = true
-		if n >= b.limit {
+		// At n == limit both branches discard all old bytes and retain p.
+		if n >= b.limit { //mutest:skip
 			b.data = append(b.data[:0], p[n-b.limit:]...)
 			return n, nil
 		}

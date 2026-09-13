@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fchimpan/mutest/mutator"
@@ -107,5 +108,19 @@ func F(x int) int {if x<int(unsafe.Sizeof(int(0))) {x=8};return x}
 	// It is not an equivalent clamp, even when mutest itself runs on 64-bit.
 	if len(points) != 1 {
 		t.Fatalf("target architecture ignored: %+v", points)
+	}
+}
+
+func TestDiscoveryRejectsTypeErrors(t *testing.T) {
+	dir := t.TempDir()
+	for name, src := range map[string]string{"go.mod": "module p\ngo 1.24.0\n", "lib.go": "package p\nfunc F(x int) bool {return x > missing}\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, dir)
+	_, err := New([]string{"."}, &mutator.ComparisonMutator{}).DiscoverAll()
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("invalid package accepted: %v", err)
 	}
 }

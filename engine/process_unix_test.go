@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,5 +52,15 @@ done
 		if pkg.BinaryPath == "" {
 			t.Fatalf("package not built: %+v", pkg)
 		}
+	}
+}
+
+func TestBuildTestBinariesPreservesBuildError(t *testing.T) {
+	fakeGo(t, "echo deliberate-build-failure >&2\nexit 7\n")
+	pkgs := map[string]*InstrumentedPackage{"p": {ImportPath: "p", TempDir: t.TempDir()}}
+	// Exercise the existing API with no optional worker limit.
+	err := New(nil).BuildTestBinaries(context.Background(), pkgs)
+	if err == nil || !strings.Contains(err.Error(), "deliberate-build-failure") {
+		t.Fatalf("original build failure lost: %v", err)
 	}
 }
