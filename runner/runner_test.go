@@ -425,8 +425,19 @@ func TestRunInstrumented_ReportsEveryCanceledMutant(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	pkgs := map[string]*engine.InstrumentedPackage{
-		"a": {NoTests: true, Mutations: []mutator.MutationPoint{{MutestID: 1}, {MutestID: 2}}},
-		"b": {NoTests: true, Mutations: []mutator.MutationPoint{{MutestID: 3}}},
+		"a": {
+			NoTests: true,
+			Mutations: []mutator.MutationPoint{
+				{MutestID: 1},
+				{MutestID: 2},
+			},
+		},
+		"b": {
+			NoTests: true,
+			Mutations: []mutator.MutationPoint{
+				{MutestID: 3},
+			},
+		},
 	}
 	var ids []int
 	s := RunInstrumented(ctx, pkgs, Config{Workers: 1}, func(r Result, done, total int) {

@@ -1,4 +1,4 @@
-package engine
+package engine_test
 
 import (
 	"os"
@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fchimpan/mutest/engine"
 	"github.com/fchimpan/mutest/mutator"
 )
 
@@ -41,7 +42,7 @@ func TestDiscoverDependencyConstants(t *testing.T) {
 				t.Fatal(err)
 			}
 			chdir(t, dir)
-			e := New([]string{"."}, &mutator.ComparisonMutator{})
+			e := engine.New([]string{"."}, &mutator.ComparisonMutator{})
 			points, err := e.DiscoverAll()
 			if err != nil {
 				t.Fatal(err)
@@ -72,7 +73,7 @@ func F() bool {return dep.Huge > 0}
 		}
 	}
 	chdir(t, dir)
-	points, err := New([]string{"./..."}, &mutator.ComparisonMutator{}).DiscoverAll()
+	points, err := engine.New([]string{"./..."}, &mutator.ComparisonMutator{}).DiscoverAll()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +101,7 @@ func F(x int) int {if x<int(unsafe.Sizeof(int(0))) {x=8};return x}
 	t.Setenv("GOOS", "")
 	t.Setenv("GOWORK", "off")
 	chdir(t, dir)
-	points, err := New([]string{"."}, &mutator.ComparisonMutator{}).DiscoverAll()
+	points, err := engine.New([]string{"."}, &mutator.ComparisonMutator{}).DiscoverAll()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,14 +114,34 @@ func F(x int) int {if x<int(unsafe.Sizeof(int(0))) {x=8};return x}
 
 func TestDiscoveryRejectsTypeErrors(t *testing.T) {
 	dir := t.TempDir()
-	for name, src := range map[string]string{"go.mod": "module p\ngo 1.24.0\n", "lib.go": "package p\nfunc F(x int) bool {return x > missing}\n"} {
+	files := map[string]string{
+		"go.mod": "module p\ngo 1.24.0\n",
+		"lib.go": "package p\nfunc F(x int) bool {return x > missing}\n",
+	}
+	for name, src := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	chdir(t, dir)
-	_, err := New([]string{"."}, &mutator.ComparisonMutator{}).DiscoverAll()
+	_, err := engine.New([]string{"."}, &mutator.ComparisonMutator{}).DiscoverAll()
 	if err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("invalid package accepted: %v", err)
 	}
+}
+
+func chdir(t *testing.T, dir string) {
+	t.Helper()
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(original); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
 }

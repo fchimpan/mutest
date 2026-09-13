@@ -1,4 +1,4 @@
-package mutator
+package mutator_test
 
 import (
 	"go/ast"
@@ -7,6 +7,8 @@ import (
 	"go/token"
 	"go/types"
 	"testing"
+
+	"github.com/fchimpan/mutest/mutator"
 )
 
 func typedFile(t *testing.T, src string) (*token.FileSet, *ast.File, *types.Info) {
@@ -26,7 +28,7 @@ func typedFile(t *testing.T, src string) (*token.FileSet, *ast.File, *types.Info
 
 func TestTypedComparisonDistinguishesConstants(t *testing.T) {
 	fs, f, info := typedFile(t, `func F(x int) bool {return 1<<100 > 0 && x < 1}`)
-	points := (&ComparisonMutator{}).DiscoverTyped(fs, f, "p.go", "p", info)
+	points := (&mutator.ComparisonMutator{}).DiscoverTyped(fs, f, "p.go", "p", info)
 	if len(points) != 2 || !points[0].Constant || points[1].Constant {
 		t.Fatalf("constant and runtime operands confused: %+v", points)
 	}
@@ -34,26 +36,58 @@ func TestTypedComparisonDistinguishesConstants(t *testing.T) {
 
 func TestTypedErrorPropagation(t *testing.T) {
 	for _, tt := range []struct {
-		name, src string
-		want      int
+		name string
+		src  string
+		want int
 	}{
-		{"direct", `func F(err error)error{if err!=nil{return err};return nil}`, 0},
-		{"swapped", `func F(err error)error{if nil!=err{return err};return nil}`, 0},
-		{"constant result", `func F(err error)(int,error){if err!=nil{return 1+2,err};return 0,nil}`, 0},
-		{"nil result", `func F(err error)(*int,error){if err!=nil{return nil,err};return nil,nil}`, 0},
-		{"wrapped", `import f "fmt"
-func F(err error)error{if err!=nil{return f.Errorf("wrap: %w",err)};return nil}`, 0},
-		{"non error", `func F(err *int)*int{if err!=nil{return err};return nil}`, 1},
-		{"different error", `func F(err,other error)error{if err!=nil{return other};return nil}`, 1},
-		{"runtime result", `func F(err error,n int)(int,error){if err!=nil{return n+1,err};return 0,nil}`, 1},
-		{"non fmt wrapper", `type formatter struct{}
+		{
+			name: "direct",
+			src:  "func F(err error)error{if err!=nil{return err};return nil}",
+		},
+		{
+			name: "swapped",
+			src:  "func F(err error)error{if nil!=err{return err};return nil}",
+		},
+		{
+			name: "constant result",
+			src:  "func F(err error)(int,error){if err!=nil{return 1+2,err};return 0,nil}",
+		},
+		{
+			name: "nil result",
+			src:  "func F(err error)(*int,error){if err!=nil{return nil,err};return nil,nil}",
+		},
+		{
+			name: "wrapped",
+			src: `import f "fmt"
+func F(err error)error{if err!=nil{return f.Errorf("wrap: %w",err)};return nil}`,
+		},
+		{
+			name: "non error",
+			src:  "func F(err *int)*int{if err!=nil{return err};return nil}",
+			want: 1,
+		},
+		{
+			name: "different error",
+			src:  "func F(err,other error)error{if err!=nil{return other};return nil}",
+			want: 1,
+		},
+		{
+			name: "runtime result",
+			src:  "func F(err error,n int)(int,error){if err!=nil{return n+1,err};return 0,nil}",
+			want: 1,
+		},
+		{
+			name: "non fmt wrapper",
+			src: `type formatter struct{}
 func(formatter)Errorf(s string,e error)error{return e}
 var fmt formatter
-func F(err error)error{if err!=nil{return fmt.Errorf("wrap: %w",err)};return nil}`, 1},
+func F(err error)error{if err!=nil{return fmt.Errorf("wrap: %w",err)};return nil}`,
+			want: 1,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fs, f, info := typedFile(t, tt.src)
-			points := (&EqualityMutator{SkipErrPropagation: true}).DiscoverTyped(fs, f, "p.go", "p", info)
+			points := (&mutator.EqualityMutator{SkipErrPropagation: true}).DiscoverTyped(fs, f, "p.go", "p", info)
 			if len(points) != tt.want {
 				t.Fatalf("got %d points, want %d", len(points), tt.want)
 			}

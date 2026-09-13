@@ -223,13 +223,27 @@ func (w *failingOutput) Write(p []byte) (int, error) {
 func TestReporterRetainsFirstWriteFailure(t *testing.T) {
 	diskErr := errors.New("disk full")
 	for _, tt := range []struct {
-		name           string
-		short          bool
-		writeErr, want error
+		name     string
+		short    bool
+		writeErr error
+		want     error
 	}{
-		{"short write", true, nil, io.ErrShortWrite},
-		{"partial failure", true, diskErr, diskErr},
-		{"full length failure", false, diskErr, diskErr},
+		{
+			name:  "short write",
+			short: true,
+			want:  io.ErrShortWrite,
+		},
+		{
+			name:     "partial failure",
+			short:    true,
+			writeErr: diskErr,
+			want:     diskErr,
+		},
+		{
+			name:     "full length failure",
+			writeErr: diskErr,
+			want:     diskErr,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			writer := &failingOutput{err: tt.writeErr, short: tt.short}

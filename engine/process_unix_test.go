@@ -1,6 +1,6 @@
 //go:build unix
 
-package engine
+package engine_test
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fchimpan/mutest/engine"
 )
 
 func fakeGo(t *testing.T, script string) {
@@ -25,7 +27,7 @@ func TestDiscoveryCancelsRunningGoList(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := New([]string{"."}).DiscoverAllContext(ctx)
+	_, err := engine.New([]string{"."}).DiscoverAllContext(ctx)
 	if err == nil || ctx.Err() == nil || time.Since(start) > 2*time.Second {
 		t.Fatalf("cancellation: %v after %v", err, time.Since(start))
 	}
@@ -41,11 +43,11 @@ while [ "$#" -gt 0 ]; do
  shift
 done
 `)
-	pkgs := map[string]*InstrumentedPackage{}
+	pkgs := map[string]*engine.InstrumentedPackage{}
 	for _, name := range []string{"a", "b", "c"} {
-		pkgs[name] = &InstrumentedPackage{ImportPath: name, TempDir: t.TempDir()}
+		pkgs[name] = &engine.InstrumentedPackage{ImportPath: name, TempDir: t.TempDir()}
 	}
-	if err := New(nil).BuildTestBinaries(context.Background(), pkgs, 1); err != nil {
+	if err := engine.New(nil).BuildTestBinaries(context.Background(), pkgs, 1); err != nil {
 		t.Fatal(err)
 	}
 	for _, pkg := range pkgs {
@@ -57,9 +59,14 @@ done
 
 func TestBuildTestBinariesPreservesBuildError(t *testing.T) {
 	fakeGo(t, "echo deliberate-build-failure >&2\nexit 7\n")
-	pkgs := map[string]*InstrumentedPackage{"p": {ImportPath: "p", TempDir: t.TempDir()}}
+	pkgs := map[string]*engine.InstrumentedPackage{
+		"p": {
+			ImportPath: "p",
+			TempDir:    t.TempDir(),
+		},
+	}
 	// Exercise the existing API with no optional worker limit.
-	err := New(nil).BuildTestBinaries(context.Background(), pkgs)
+	err := engine.New(nil).BuildTestBinaries(context.Background(), pkgs)
 	if err == nil || !strings.Contains(err.Error(), "deliberate-build-failure") {
 		t.Fatalf("original build failure lost: %v", err)
 	}
