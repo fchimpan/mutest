@@ -2,7 +2,9 @@ package output
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -16,12 +18,14 @@ func TestReporter_Info(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	textRep := NewReporter(config.Config{}, &stdout, &stderr, "/")
-	if textRep.Info() != &stdout {
+	fmt.Fprint(textRep.Info(), "text")
+	if stdout.String() != "text" || stderr.Len() != 0 {
 		t.Error("text mode: Info() should return stdout")
 	}
 
 	jsonRep := NewReporter(config.Config{JSON: true}, &stdout, &stderr, "/")
-	if jsonRep.Info() != &stderr {
+	fmt.Fprint(jsonRep.Info(), "json")
+	if stderr.String() != "json" || stdout.String() != "text" {
 		t.Error("json mode: Info() should return stderr")
 	}
 }
@@ -197,6 +201,60 @@ func TestStatusOf(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := statusOf(tt.res); got != tt.want {
 				t.Errorf("statusOf() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+type failingOutput struct {
+	err   error
+	short bool
+	calls int
+}
+
+func (w *failingOutput) Write(p []byte) (int, error) {
+	w.calls++
+	if w.short {
+		return len(p) - 1, w.err
+	}
+	return len(p), w.err
+}
+
+func TestReporterRetainsFirstWriteFailure(t *testing.T) {
+	diskErr := errors.New("disk full")
+	for _, tt := range []struct {
+		name     string
+		short    bool
+		writeErr error
+		want     error
+	}{
+		{
+			name:  "short write",
+			short: true,
+			want:  io.ErrShortWrite,
+		},
+		{
+			name:     "partial failure",
+			short:    true,
+			writeErr: diskErr,
+			want:     diskErr,
+		},
+		{
+			name:     "full length failure",
+			writeErr: diskErr,
+			want:     diskErr,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			writer := &failingOutput{err: tt.writeErr, short: tt.short}
+			rep := NewReporter(config.Config{JSON: true}, writer, io.Discard, "/")
+			rep.NoMutationPoints()
+			if !errors.Is(rep.Err(), tt.want) {
+				t.Fatalf("lost output failure: %v", rep.Err())
+			}
+			rep.NoMutationPoints()
+			if writer.calls != 1 || !errors.Is(rep.Err(), tt.want) {
+				t.Fatalf("failure was not retained: calls=%d err=%v", writer.calls, rep.Err())
 			}
 		})
 	}

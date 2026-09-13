@@ -13,6 +13,7 @@ import (
 
 	"github.com/fchimpan/mutest/config"
 	"github.com/fchimpan/mutest/output"
+	"github.com/fchimpan/mutest/runner"
 )
 
 func chdir(t *testing.T, dir string) {
@@ -519,6 +520,16 @@ func TestThreshold(t *testing.T) {
 
 	if err := run(context.Background(), cfg, &stdout, &stderr); err != nil {
 		t.Errorf("expected nil error when kill rate exactly equals threshold, got %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+}
+
+func TestEvaluateSummaryUsesExactRate(t *testing.T) {
+	s := &runner.Summary{Total: 2001, Killed: 2000, Survived: 1}
+	if !errors.Is(evaluateSummary(s, 100), ErrTestsFailed) {
+		t.Fatal("survivor passed threshold 100")
+	}
+	if evaluateSummary(s, 99.9) != nil {
+		t.Fatal("valid threshold rejected")
 	}
 }
 

@@ -3,6 +3,9 @@ package mutator
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
+	"strconv"
+	"strings"
 )
 
 // equalitySwapTable defines equality mutations.
@@ -21,9 +24,13 @@ type EqualityMutator struct {
 func (m *EqualityMutator) Name() string { return "comparison-equality" }
 
 func (m *EqualityMutator) Discover(fset *token.FileSet, file *ast.File, filePath, pkg string) []MutationPoint {
+	return m.DiscoverTyped(fset, file, filePath, pkg, nil)
+}
+
+func (m *EqualityMutator) DiscoverTyped(fset *token.FileSet, file *ast.File, filePath, pkg string, info *types.Info) []MutationPoint {
 	var errSkip map[*ast.BinaryExpr]bool
 	if m.SkipErrPropagation {
-		errSkip = buildErrPropagationSet(file)
+		errSkip = buildErrPropagationSet(file, info)
 	}
 
 	var points []MutationPoint
@@ -38,7 +45,7 @@ func (m *EqualityMutator) Discover(fset *token.FileSet, file *ast.File, filePath
 				nodeID++
 				return true
 			}
-			pos := fset.Position(bin.OpPos)
+			pos := fset.PositionFor(bin.OpPos, false)
 			points = append(points, MutationPoint{
 				File:     filePath,
 				Package:  pkg,
@@ -79,14 +86,14 @@ func (m *EqualityMutator) Apply(file *ast.File, point MutationPoint) {
 // buildErrPropagationSet pre-walks the AST and returns a set of *ast.BinaryExpr
 // pointers that represent simple error propagation patterns (e.g., if err != nil { return err }).
 // These are skipped by default because they generate noise in mutation testing.
-func buildErrPropagationSet(file *ast.File) map[*ast.BinaryExpr]bool {
+func buildErrPropagationSet(file *ast.File, info *types.Info) map[*ast.BinaryExpr]bool {
 	skip := make(map[*ast.BinaryExpr]bool)
 	ast.Inspect(file, func(n ast.Node) bool {
 		ifStmt, ok := n.(*ast.IfStmt)
 		if !ok {
 			return true
 		}
-		if !isSimpleErrPropagation(ifStmt) {
+		if !isSimpleErrPropagation(ifStmt, info) {
 			return true
 		}
 		if bin, ok := ifStmt.Cond.(*ast.BinaryExpr); ok && isErrNilCheck(bin) {
@@ -112,15 +119,85 @@ func buildErrPropagationSet(file *ast.File) map[*ast.BinaryExpr]bool {
 //	if err != nil { rel = path }          // assignment, not return
 //	if err != nil { a(); b() }            // multiple statements
 //	if err != nil { return } else { ... } // has else
-func isSimpleErrPropagation(ifStmt *ast.IfStmt) bool {
+func isSimpleErrPropagation(ifStmt *ast.IfStmt, info *types.Info) bool {
 	if ifStmt.Else != nil {
 		return false
 	}
 	if len(ifStmt.Body.List) != 1 {
 		return false
 	}
-	_, isReturn := ifStmt.Body.List[0].(*ast.ReturnStmt)
-	return isReturn
+	bin, ok := ifStmt.Cond.(*ast.BinaryExpr)
+	if !ok || bin.Op != token.NEQ || !isErrNilCheck(bin) {
+		return false
+	}
+	id, _ := bin.X.(*ast.Ident)
+	if id.Name == "nil" {
+		id, _ = bin.Y.(*ast.Ident)
+	}
+	if info != nil {
+		typ := info.TypeOf(id)
+		if typ == nil || !types.Implements(typ, types.Universe.Lookup("error").Type().Underlying().(*types.Interface)) {
+			return false
+		}
+	}
+	ret, ok := ifStmt.Body.List[0].(*ast.ReturnStmt)
+	if !ok {
+		return false
+	}
+	same := func(expr ast.Expr) bool {
+		other, ok := ast.Unparen(expr).(*ast.Ident)
+		if !ok || other.Name != id.Name {
+			return false
+		}
+		return info == nil || info.ObjectOf(other) == info.ObjectOf(id)
+	}
+	propagates := false
+	for _, expr := range ret.Results {
+		if same(expr) {
+			propagates = true
+			continue
+		}
+		// Other return values must be constants or nil; calls and computed
+		// values can have meaningful behavior beyond error propagation.
+		if info != nil {
+			if tv := info.Types[expr]; tv.Value != nil || tv.IsNil() {
+				continue
+			}
+		} else if _, ok := expr.(*ast.BasicLit); ok || isNilIdent(expr) {
+			continue
+		}
+		call, ok := expr.(*ast.CallExpr)
+		if !ok || len(call.Args) != 2 || !same(call.Args[1]) {
+			return false
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Errorf" {
+			return false
+		}
+		if info != nil {
+			obj := info.ObjectOf(sel.Sel)
+			if obj == nil || obj.Pkg() == nil || obj.Pkg().Path() != "fmt" {
+				return false
+			}
+		} else {
+			pkg, ok := sel.X.(*ast.Ident)
+			if !ok || pkg.Name != "fmt" {
+				return false
+			}
+		}
+		lit, ok := call.Args[0].(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return false
+		}
+		format, err := strconv.Unquote(lit.Value)
+		// Recognize only a single unambiguous wrapping verb. Escaped or
+		// indexed verbs and extra arguments remain mutation targets.
+		if err != nil || strings.Count(format, "%") != 1 || !strings.Contains(format, "%w") {
+			return false
+		}
+		propagates = true
+	}
+	return propagates
 }
 
 // isErrNilCheck returns true if the binary expression compares the identifier

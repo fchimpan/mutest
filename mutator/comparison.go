@@ -3,6 +3,7 @@ package mutator
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
 )
 
 // swapTable defines boundary value mutations for comparison operators.
@@ -19,6 +20,11 @@ type ComparisonMutator struct{}
 func (m *ComparisonMutator) Name() string { return "comparison-boundary" }
 
 func (m *ComparisonMutator) Discover(fset *token.FileSet, file *ast.File, filePath, pkg string) []MutationPoint {
+	return m.DiscoverTyped(fset, file, filePath, pkg, nil)
+}
+
+func (m *ComparisonMutator) DiscoverTyped(fset *token.FileSet, file *ast.File, filePath, pkg string, info *types.Info) []MutationPoint {
+	skip := clampComparisons(file, info)
 	var points []MutationPoint
 	nodeID := 0
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -27,11 +33,11 @@ func (m *ComparisonMutator) Discover(fset *token.FileSet, file *ast.File, filePa
 			return true
 		}
 		if mutated, exists := swapTable[bin.Op]; exists {
-			if isNonNegativeComparison(bin) {
+			if skip[bin] {
 				nodeID++
 				return true
 			}
-			pos := fset.Position(bin.OpPos)
+			pos := fset.PositionFor(bin.OpPos, false)
 			points = append(points, MutationPoint{
 				File:     filePath,
 				Package:  pkg,
@@ -40,6 +46,7 @@ func (m *ComparisonMutator) Discover(fset *token.FileSet, file *ast.File, filePa
 				Original: bin.Op,
 				Mutated:  mutated,
 				NodeID:   nodeID,
+				Constant: info != nil && info.Types[bin].Value != nil,
 				Desc:     bin.Op.String() + " to " + mutated.String(),
 			})
 		}
@@ -47,39 +54,6 @@ func (m *ComparisonMutator) Discover(fset *token.FileSet, file *ast.File, filePa
 		return true
 	})
 	return points
-}
-
-// isNonNegativeComparison returns true if the expression compares a
-// non-negative builtin (len, cap) against the literal 0. Mutating such
-// comparisons always produces a false positive because len/cap never
-// return negative values, making the mutation semantically equivalent.
-//
-// Skipped patterns (all mutations are no-ops):
-//
-//	len(x) > 0  → len(x) >= 0  (>= 0 is always true, not a useful boundary)
-//	len(x) >= 0 → len(x) > 0   (narrows from always-true, but not a boundary bug)
-//	len(x) < 0  → len(x) <= 0  (< 0 is always false)
-//	len(x) <= 0 → len(x) < 0   (always-false vs empty-check, not a boundary)
-func isNonNegativeComparison(bin *ast.BinaryExpr) bool {
-	return (isNonNegativeCall(bin.X) && isIntLit(bin.Y, "0")) ||
-		(isNonNegativeCall(bin.Y) && isIntLit(bin.X, "0"))
-}
-
-func isNonNegativeCall(expr ast.Expr) bool {
-	call, ok := expr.(*ast.CallExpr)
-	if !ok {
-		return false
-	}
-	ident, ok := call.Fun.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	return ident.Name == "len" || ident.Name == "cap"
-}
-
-func isIntLit(expr ast.Expr, value string) bool {
-	lit, ok := expr.(*ast.BasicLit)
-	return ok && lit.Kind == token.INT && lit.Value == value
 }
 
 func (m *ComparisonMutator) Apply(file *ast.File, point MutationPoint) {

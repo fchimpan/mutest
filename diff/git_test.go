@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -489,4 +490,35 @@ func TestParseGitDiff_SymlinkedWorkingDirectory(t *testing.T) {
 	}
 
 	checkChangedLines(t, link, cl, map[string][]int{"pkg/lib.go": {5}}, nil, nil)
+}
+
+func TestParseGitDiff_ConfigAndQuotedPaths(t *testing.T) {
+	for _, setting := range []string{"diff.mnemonicPrefix", "diff.noprefix", "diff.relative"} {
+		t.Run(setting, func(t *testing.T) {
+			const name = "other/a\"b.go"
+			dir := setupRepo(t, map[string]string{name: "package p\nvar A = 1\n", "sub/keep.go": "package sub\n"})
+			runGit(t, dir, "config", setting, "true")
+			writeRepoFile(t, dir, name, "package p\nvar A = 2\n")
+			writeRepoFile(t, dir, "other/new\"file.go", "package p\n")
+			chdirRepo(t, filepath.Join(dir, "sub"))
+			cl, err := ParseGitDiff("base")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cl[filepath.Join(dir, name)][2] {
+				t.Fatalf("missing tracked change: %#v", cl)
+			}
+			if lines, ok := cl[filepath.Join(dir, "other/new\"file.go")]; !ok || lines != nil {
+				t.Fatalf("missing untracked change: %#v", cl)
+			}
+		})
+	}
+}
+
+func TestParseGitDiff_Canceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ParseGitDiffContext(ctx, "base"); err != context.Canceled {
+		t.Fatalf("got %v", err)
+	}
 }

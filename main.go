@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -23,6 +24,16 @@ func main() {
 
 	if err := mutest.Run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "mutest: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
+}
+
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if errors.Is(err, mutest.ErrTestsFailed) || errors.Is(err, mutest.ErrBaseline) || errors.Is(err, mutest.ErrInterrupted) {
+		return 1
+	}
+	return 2
 }

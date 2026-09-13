@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/fchimpan/mutest/internal/process"
 )
 
 var hunkRe = regexp.MustCompile(`@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
@@ -21,12 +24,19 @@ var hunkRe = regexp.MustCompile(`@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 //
 //mutest:skip
 func ParseGitDiff(baseRef string) (ChangedLines, error) {
-	root, err := repoRoot()
+	return ParseGitDiffContext(context.Background(), baseRef)
+}
+
+func ParseGitDiffContext(ctx context.Context, baseRef string) (ChangedLines, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root, err := repoRootContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("git repo root: %w", err)
 	}
 
-	mbOut, err := exec.Command("git", "merge-base", baseRef, "HEAD").Output()
+	mbOut, err := process.Command(ctx, "git", "merge-base", "--", baseRef, "HEAD").Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("git merge-base %s HEAD failed: %s", baseRef, strings.TrimSpace(string(exitErr.Stderr)))
@@ -39,10 +49,12 @@ func ParseGitDiff(baseRef string) (ChangedLines, error) {
 	// working tree, which is what mutation discovery parses. core.quotepath=off
 	// makes git print non-ASCII paths verbatim instead of quoting and escaping
 	// them (see parseDiffOutput).
-	out, err := exec.Command(
-		"git", "-c", "core.quotepath=off", "diff", "--unified=0", "--no-color",
+	cmd := process.Command(ctx,
+		"git", "-c", "core.quotepath=off", "diff", "--unified=0", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--no-relative", "--no-ext-diff", "--no-textconv",
 		mb, "--", "*.go",
-	).Output()
+	)
+	cmd.Dir = root
+	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("git diff failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
@@ -51,28 +63,30 @@ func ParseGitDiff(baseRef string) (ChangedLines, error) {
 	}
 
 	cl := parseDiffOutput(out, root)
-	if err := addUntrackedFiles(cl, root); err != nil {
+	if err := addUntrackedFiles(ctx, cl, root); err != nil {
 		return nil, err
 	}
-	return cl, nil
+	return cl, ctx.Err()
 }
 
 // addUntrackedFiles marks every untracked (but not ignored) Go file as a
 // whole-file change in cl, using the nil line set convention described on
 // ChangedLines. git diff does not report untracked files, so without this
 // step brand-new files would silently escape diff mode.
-func addUntrackedFiles(cl ChangedLines, root string) error {
-	out, err := exec.Command(
+func addUntrackedFiles(ctx context.Context, cl ChangedLines, root string) error {
+	cmd := process.Command(ctx,
 		"git", "-c", "core.quotepath=off", "ls-files",
-		"--others", "--exclude-standard", "--full-name", "--", "*.go",
-	).Output()
+		"-z", "--others", "--exclude-standard", "--full-name", "--", "*.go",
+	)
+	cmd.Dir = root
+	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("git ls-files failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
 		}
 		return fmt.Errorf("git ls-files: %w", err)
 	}
-	for line := range strings.SplitSeq(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\x00") {
 		if line == "" {
 			continue
 		}
@@ -89,8 +103,9 @@ func addUntrackedFiles(cl ChangedLines, root string) error {
 // report the logical, symlink-preserving one. The two views differ e.g. under
 // the macOS temp dir (/var -> /private/var), and ChangedLines keys must match
 // the Go toolchain's view for FilterPoints to work.
-func repoRoot() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--show-cdup").Output()
+func repoRoot() (string, error) { return repoRootContext(context.Background()) }
+func repoRootContext(ctx context.Context) (string, error) {
+	out, err := process.Command(ctx, "git", "rev-parse", "--show-cdup").Output()
 	if err != nil {
 		return "", fmt.Errorf("not a git repository")
 	}
@@ -108,9 +123,8 @@ func repoRoot() (string, error) {
 // are never attributed to a stale path.
 //
 // The output must come from git run with -c core.quotepath=off so that
-// non-ASCII paths appear verbatim. Known limitation: paths containing double
-// quotes or control characters are quoted by git even with quotepath=off and
-// are not recognized here.
+// non-ASCII paths appear verbatim. Quoted paths with escaped quotes or
+// control characters are decoded before resolving their absolute paths.
 func parseDiffOutput(output []byte, root string) ChangedLines {
 	cl := make(ChangedLines)
 	var currentFile string
@@ -120,6 +134,11 @@ func parseDiffOutput(output []byte, root string) ChangedLines {
 			// git appends a TAB after header paths that contain spaces
 			// (GNU diff convention).
 			p = strings.TrimSuffix(p, "\t")
+			if strings.HasPrefix(p, "\"") {
+				if decoded, err := strconv.Unquote(p); err == nil {
+					p = decoded
+				}
+			}
 			if p == "/dev/null" {
 				currentFile = ""
 			} else {

@@ -4,17 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/fchimpan/mutest/internal/process"
 	"github.com/fchimpan/mutest/mutator"
 )
 
@@ -56,7 +59,13 @@ func (e *Engine) InstrumentAll(points []mutator.MutationPoint) (map[string]*Inst
 
 	result := make(map[string]*InstrumentedPackage, len(byPkg))
 
-	for importPath, indices := range byPkg {
+	importPaths := make([]string, 0, len(byPkg))
+	for importPath := range byPkg {
+		importPaths = append(importPaths, importPath)
+	}
+	sort.Strings(importPaths)
+	for _, importPath := range importPaths {
+		indices := byPkg[importPath]
 		// Assign MutestIDs (1-based) directly into the original slice.
 		pkgPoints := make([]mutator.MutationPoint, len(indices))
 		for rank, idx := range indices {
@@ -66,6 +75,7 @@ func (e *Engine) InstrumentAll(points []mutator.MutationPoint) (map[string]*Inst
 
 		pkg, err := e.instrumentPackage(importPath, pkgPoints)
 		if err != nil {
+			CleanupInstrumented(result)
 			return nil, fmt.Errorf("instrument %s: %w", importPath, err)
 		}
 		result[importPath] = pkg
@@ -257,10 +267,13 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 			// switch. A comparison also yields an untyped bool, so
 			// defined-bool-type contexts keep compiling.
 			callExpr = fmt.Sprintf("(%s %s %s) != _mutest_on(%d)", lhs, pt.Original.String(), rhs, pt.MutestID)
+		} else if pt.Constant {
+			// Keep arbitrary-precision constant operands in their original context.
+			callExpr = fmt.Sprintf("((%s %s %s) != (_mutest_on(%d) && (%s == %s)))", lhs, pt.Original.String(), rhs, pt.MutestID, lhs, rhs)
 		} else {
 			// Ordered mutations are not negations (`>` vs `>=`), so they go
 			// through a generic helper instead.
-			callExpr = fmt.Sprintf("_mutest_cmp_%d(%s, %s)", pt.MutestID, lhs, rhs)
+			callExpr = fmt.Sprintf("(_mutest_cmp_%d(%s, %s) != false)", pt.MutestID, lhs, rhs)
 			helpers = append(helpers, helperSpec{ID: pt.MutestID, Original: pt.Original, Mutated: pt.Mutated})
 		}
 
@@ -293,8 +306,7 @@ func instrumentFile(src []byte, filePath string, points []mutator.MutationPoint)
 	var buf bytes.Buffer
 	buf.Grow(len(src) * 2)
 	pos := 0
-	for i := len(rootRepls) - 1; i >= 0; i-- {
-		r := rootRepls[i]
+	for _, r := range slices.Backward(rootRepls) {
 		buf.Write(src[pos:r.start])
 		buf.WriteString(r.text)
 		pos = r.end
@@ -360,9 +372,6 @@ func generateRuntime(pkg string, helpers []helperSpec) []byte {
 	b.WriteString("package " + pkg + "\n\n")
 
 	b.WriteString("import (\n")
-	if len(helpers) > 0 {
-		b.WriteString("\t\"cmp\"\n")
-	}
 	b.WriteString("\t\"os\"\n")
 	b.WriteString("\t\"strconv\"\n")
 	b.WriteString("\t\"sync\"\n")
@@ -387,9 +396,12 @@ func generateRuntime(pkg string, helpers []helperSpec) []byte {
 	b.WriteString("\treturn _mutest_active == id\n")
 	b.WriteString("}\n")
 
+	if len(helpers) > 0 {
+		b.WriteString("type _mutest_ordered interface { ~int | ~int8 | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr | ~float32 | ~float64 | ~string }\n")
+	}
 	for _, h := range helpers {
 		b.WriteString("\n")
-		fmt.Fprintf(&b, "func _mutest_cmp_%d[T cmp.Ordered](a, b T) bool {\n", h.ID)
+		fmt.Fprintf(&b, "func _mutest_cmp_%d[T _mutest_ordered](a, b T) bool {\n", h.ID)
 		b.WriteString("\t_mutest_init()\n")
 		fmt.Fprintf(&b, "\tif _mutest_active == %d {\n", h.ID)
 		fmt.Fprintf(&b, "\t\treturn a %s b\n", h.Mutated.String())
@@ -405,8 +417,8 @@ func generateRuntime(pkg string, helpers []helperSpec) []byte {
 func (e *Engine) BuildTestBinary(ctx context.Context, pkg *InstrumentedPackage) error {
 	binPath := filepath.Join(pkg.TempDir, "pkg.test")
 	args := []string{"test", "-c", "-overlay=" + pkg.OverlayPath, "-vet=off", "-p=1", "-ldflags=-s -w", "-o", binPath, pkg.ImportPath}
-	cmd := exec.CommandContext(ctx, "go", args...)
-	out, err := cmd.CombinedOutput()
+	cmd := process.Command(ctx, "go", args...)
+	out, err := process.CombinedOutput(cmd, 64<<10)
 	if err != nil {
 		return fmt.Errorf("build %s: %w\n%s", pkg.ImportPath, err, out)
 	}
@@ -414,6 +426,9 @@ func (e *Engine) BuildTestBinary(ctx context.Context, pkg *InstrumentedPackage) 
 	// test files (it prints "?  pkg [no test files]"). Detect this via stat —
 	// never by parsing output — and mark the package so its mutants survive.
 	if _, statErr := os.Stat(binPath); statErr != nil {
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
 		pkg.NoTests = true
 		return nil
 	}
@@ -422,26 +437,47 @@ func (e *Engine) BuildTestBinary(ctx context.Context, pkg *InstrumentedPackage) 
 }
 
 // BuildTestBinaries builds test binaries for all packages in parallel.
-func (e *Engine) BuildTestBinaries(ctx context.Context, pkgs map[string]*InstrumentedPackage) error {
+func (e *Engine) BuildTestBinaries(ctx context.Context, pkgs map[string]*InstrumentedPackage, limits ...int) error {
+	workers := runtime.NumCPU()
+	if len(limits) > 0 {
+		workers = limits[0]
+	}
+	if workers < 1 {
+		return fmt.Errorf("build workers must be positive")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := make(chan struct{}, workers)
 	var mu sync.Mutex
 	var firstErr error
 	var wg sync.WaitGroup
 
+launch:
 	for _, pkg := range pkgs {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break launch
+		}
 		wg.Add(1)
 		go func(p *InstrumentedPackage) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			if err := e.BuildTestBinary(ctx, p); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err
+					cancel()
 				}
 				mu.Unlock()
 			}
 		}(pkg)
 	}
 	wg.Wait()
-	return firstErr
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 // CleanupInstrumented removes temp directories for all instrumented packages.

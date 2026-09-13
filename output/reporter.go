@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/fchimpan/mutest/config"
 	"github.com/fchimpan/mutest/mutator"
@@ -18,16 +19,16 @@ type Reporter struct {
 	stdout io.Writer
 	stderr io.Writer
 	rpc    *RelPathCache
+	errors *writeErrors
 }
 
 // NewReporter builds a Reporter for the given config. baseDir is the directory
 // against which file paths are reported (typically the current working dir).
 func NewReporter(cfg config.Config, stdout, stderr io.Writer, baseDir string) *Reporter {
+	errors := &writeErrors{}
 	return &Reporter{
-		cfg:    cfg,
-		stdout: stdout,
-		stderr: stderr,
-		rpc:    NewRelPathCache(baseDir),
+		cfg: cfg, stdout: &checkedWriter{w: stdout, errors: errors}, stderr: &checkedWriter{w: stderr, errors: errors},
+		rpc: NewRelPathCache(baseDir), errors: errors,
 	}
 }
 
@@ -111,4 +112,36 @@ func statusOf(r runner.Result) string {
 	default:
 		return "KILLED"
 	}
+}
+
+// Err returns the first output failure, including writes through Info.
+func (r *Reporter) Err() error {
+	r.errors.mu.Lock()
+	defer r.errors.mu.Unlock()
+	return r.errors.err
+}
+
+type writeErrors struct {
+	mu  sync.Mutex
+	err error
+}
+type checkedWriter struct {
+	w      io.Writer
+	errors *writeErrors
+}
+
+func (w *checkedWriter) Write(p []byte) (int, error) {
+	w.errors.mu.Lock()
+	defer w.errors.mu.Unlock()
+	if w.errors.err != nil {
+		return 0, w.errors.err
+	}
+	n, err := w.w.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		w.errors.err = err
+	}
+	return n, err
 }
