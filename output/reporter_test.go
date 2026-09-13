@@ -16,12 +16,14 @@ func TestReporter_Info(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	textRep := NewReporter(config.Config{}, &stdout, &stderr, "/")
-	if textRep.Info() != &stdout {
+	fmt.Fprint(textRep.Info(), "text")
+	if stdout.String() != "text" || stderr.Len() != 0 {
 		t.Error("text mode: Info() should return stdout")
 	}
 
 	jsonRep := NewReporter(config.Config{JSON: true}, &stdout, &stderr, "/")
-	if jsonRep.Info() != &stderr {
+	fmt.Fprint(jsonRep.Info(), "json")
+	if stderr.String() != "json" || stdout.String() != "text" {
 		t.Error("json mode: Info() should return stderr")
 	}
 }

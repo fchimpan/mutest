@@ -61,7 +61,7 @@ func Foo(a, b int, flag bool) bool {
 
 	// Both mutations should be instrumented, the inner > call nested inside
 	// the outer == flip.
-	if !strings.Contains(result, "((_mutest_cmp_1(a, b)) == flag) != _mutest_on(2)") {
+	if !strings.Contains(result, "(((_mutest_cmp_1(a, b) != false)) == flag) != _mutest_on(2)") {
 		t.Errorf("expected inner > call nested in outer == flip, got:\n%s", result)
 	}
 
@@ -179,7 +179,7 @@ func Baz(a, b int, flag, expected bool) bool {
 	mustParseInstrumented(t, out)
 
 	// All three mutations should be present, nested innermost to outermost.
-	want := "((((_mutest_cmp_1(a, b)) == flag) != _mutest_on(2)) != expected) != _mutest_on(3)"
+	want := "(((((_mutest_cmp_1(a, b) != false)) == flag) != _mutest_on(2)) != expected) != _mutest_on(3)"
 	if !strings.Contains(result, want) {
 		t.Errorf("expected %s, got:\n%s", want, result)
 	}
@@ -438,5 +438,39 @@ func Simple(a, b int) bool {
 	}
 	if len(helpers) != 1 {
 		t.Errorf("expected 1 helper, got %d", len(helpers))
+	}
+}
+
+func TestInstrumentAll_CleansPartialFailure(t *testing.T) {
+	root := t.TempDir()
+	temp := t.TempDir()
+	t.Setenv("TMPDIR", temp)
+	t.Setenv("TMP", temp)
+	t.Setenv("TEMP", temp)
+	e := New(nil)
+	var points []mutator.MutationPoint
+	for _, name := range []string{"a", "z"} {
+		dir := filepath.Join(root, name)
+		if err := os.Mkdir(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "lib.go")
+		e.sourceCache[path] = []byte("package p\nfunc F(n int) bool {return n>0}\n")
+		points = append(points, mutator.MutationPoint{File: path, Package: "p", ImportPath: name, NodeID: 0, Original: token.GTR, Mutated: token.GEQ})
+	}
+	if err := os.WriteFile(filepath.Join(root, "z", "mutest_runtime.go"), []byte("package p"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	pkgs, err := e.InstrumentAll(points)
+	if err == nil {
+		CleanupInstrumented(pkgs)
+		t.Fatal("expected collision")
+	}
+	entries, err := os.ReadDir(temp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("leaked temporary directories: %v", entries)
 	}
 }

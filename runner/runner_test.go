@@ -420,3 +420,22 @@ func TestTrimBaselineOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestRunInstrumented_ReportsEveryCanceledMutant(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pkgs := map[string]*engine.InstrumentedPackage{
+		"a": {NoTests: true, Mutations: []mutator.MutationPoint{{MutestID: 1}, {MutestID: 2}}},
+		"b": {NoTests: true, Mutations: []mutator.MutationPoint{{MutestID: 3}}},
+	}
+	var ids []int
+	s := RunInstrumented(ctx, pkgs, Config{Workers: 1}, func(r Result, done, total int) {
+		if !r.Canceled || done != len(ids)+1 || total != 3 {
+			t.Errorf("bad canceled event: %+v %d/%d", r, done, total)
+		}
+		ids = append(ids, r.Point.MutestID)
+	})
+	if s.Canceled != 3 || len(ids) != 3 {
+		t.Fatalf("missing events: %+v %v", s, ids)
+	}
+}

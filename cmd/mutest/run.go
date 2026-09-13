@@ -90,11 +90,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if *showVersion {
 		v, c, d := resolveVersion()
 		if c != "none" {
-			fmt.Fprintf(stdout, "mutest %s (commit: %s, built: %s)\n", v, c, d)
+			_, err := fmt.Fprintf(stdout, "mutest %s (commit: %s, built: %s)\n", v, c, d)
+			return err
 		} else {
-			fmt.Fprintf(stdout, "mutest %s\n", v)
+			_, err := fmt.Fprintf(stdout, "mutest %s\n", v)
+			return err
 		}
-		return nil
 	}
 
 	patterns := fs.Args()
@@ -129,7 +130,15 @@ func baselineErr(ctx context.Context, err error) error {
 	return fmt.Errorf("%w: %w", ErrBaseline, err)
 }
 
-func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error {
+func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) (retErr error) {
+	defer func() {
+		if ctx.Err() != nil && !errors.Is(retErr, ErrInterrupted) {
+			retErr = errors.Join(retErr, ErrInterrupted)
+		}
+	}()
+	if ctx.Err() != nil {
+		return ErrInterrupted
+	}
 	if err := config.Validate(cfg); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
@@ -138,7 +147,7 @@ func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error
 		SkipErrPropagation: cfg.SkipErrPropagation,
 	})
 
-	points, err := eng.DiscoverAll()
+	points, err := eng.DiscoverAllContext(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrDiscovery, err)
 	}
@@ -148,9 +157,14 @@ func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error
 		return fmt.Errorf("failed to get current working directory: %w", err)
 	}
 	rep := output.NewReporter(cfg, stdout, stderr, cwd)
+	defer func() {
+		if err := rep.Err(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("write output: %w", err))
+		}
+	}()
 
 	if cfg.Diff != "" { //mutest:skip
-		cl, err := diff.ParseGitDiff(cfg.Diff)
+		cl, err := diff.ParseGitDiffContext(ctx, cfg.Diff)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrDiff, err)
 		}
@@ -176,25 +190,10 @@ func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInstrumentation, err)
 	}
-	// Ensure temp dirs are cleaned up even on SIGINT/SIGTERM.
-	// defer alone is insufficient: os.Exit bypasses defers, and
-	// a killed process never runs them at all.
-	cleanupDone := make(chan struct{})
-	go func() {
-		<-ctx.Done()
-		engine.CleanupInstrumented(pkgs)
-		close(cleanupDone)
-	}()
-	defer func() {
-		engine.CleanupInstrumented(pkgs)
-		select {
-		case <-cleanupDone:
-		default:
-		}
-	}()
+	defer engine.CleanupInstrumented(pkgs)
 
 	fmt.Fprintf(rep.Info(), "mutest: building test binaries...\n")
-	if err := eng.BuildTestBinaries(ctx, pkgs); err != nil {
+	if err := eng.BuildTestBinaries(ctx, pkgs, cfg.Workers); err != nil {
 		return fmt.Errorf("%w: %w", ErrBuild, err)
 	}
 
@@ -232,15 +231,19 @@ func run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) error
 		return ErrInterrupted
 	}
 
-	if cfg.Threshold > 0 {
+	return evaluateSummary(summary, cfg.Threshold)
+}
+
+func evaluateSummary(summary *runner.Summary, threshold float64) error {
+	if summary.Canceled > 0 {
+		return ErrInterrupted
+	}
+	if threshold > 0 {
 		// Errors mean mutants could not be tested; never silently pass them.
 		if summary.Errors > 0 {
 			return ErrTestsFailed
 		}
-		// Compare against the same rounded value shown to the user (F11): a
-		// raw-rate comparison could fail "-threshold 80" on a run that
-		// displays "Score: 80.0%" whenever the unrounded rate was e.g. 79.96.
-		if output.RoundedKillRate(summary) < cfg.Threshold {
+		if output.CalcKillRate(summary) < threshold {
 			return ErrTestsFailed
 		}
 		return nil

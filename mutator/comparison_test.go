@@ -105,7 +105,7 @@ func f(a, b int) bool { return a == b || a != b }
 	}
 }
 
-func TestComparisonMutator_Discover_SkipsLenCapZero(t *testing.T) {
+func TestComparisonMutator_Discover_KeepsLenCapZero(t *testing.T) {
 	src := `package example
 
 func f(s []int) {
@@ -128,10 +128,9 @@ func f(s []int) {
 	m := &ComparisonMutator{}
 	points := m.Discover(fset, file, "/fake/test.go", "example")
 
-	// Skipped (6): len(s)>0, len(s)>=0, len(s)<0, len(s)<=0, cap(s)>0, 0<len(s)
-	// Kept (2): len(s)>1 (non-zero literal), len(s)>len(s) (no literal 0)
-	if len(points) != 2 {
-		t.Errorf("expected 2 mutation points, got %d", len(points))
+	// Empty inputs distinguish strict and inclusive zero boundaries.
+	if len(points) != 8 {
+		t.Errorf("expected 8 mutation points, got %d", len(points))
 		for i, p := range points {
 			t.Logf("  point[%d]: line %d col %d %s", i, p.Line, p.Column, p.Desc)
 		}

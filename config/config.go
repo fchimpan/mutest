@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -28,7 +29,7 @@ func Validate(c Config) error {
 	if c.Timeout <= 0 {
 		return fmt.Errorf("-timeout must be > 0, got %s", c.Timeout)
 	}
-	if c.Threshold < 0 || c.Threshold > 100 {
+	if math.IsNaN(c.Threshold) || math.IsInf(c.Threshold, 0) || c.Threshold < 0 || c.Threshold > 100 {
 		return fmt.Errorf("-threshold must be between 0 and 100, got %.1f", c.Threshold)
 	}
 	return nil

@@ -51,7 +51,7 @@ Relational Operator Replacement (ROR) — mutating `>`, `>=`, `<`, `<=`, `==`, `
 - **`-threshold`** — CI quality gate (e.g., `-threshold 80` fails if score < 80%)
 - **`-json`** — Machine-readable output for CI pipelines (`-json -v` for NDJSON streaming)
 - **`-dry-run`** — Preview mutations without running tests
-- **Low noise** — Automatically skips equivalent mutants (`len(x) > 0`) and simple error propagation (`if err != nil { return err }`)
+- **Low noise** — Automatically skips equivalent local integer clamps (`if x < 1 { x = 1 }`) and simple error propagation (`if err != nil { return err }`)
 - **Zero dependencies** — Go standard library only
 
 ---
@@ -153,28 +153,25 @@ When mutest reports a survivor like this:
 It means mutest swapped the operator and **no test noticed**:
 
 ```go
-func Max(a, b int) int {
-    if a > b {  // ← mutest changed this to >=, tests still passed
-        return a
-    }
-    return b
+func IsAdult(age int) bool {
+    return age > 17  // ← mutest changed this to >=, tests still passed
 }
 ```
 
-The fix — add a test at the boundary:
+Add a test at the boundary:
 
 ```go
-func TestMax_EqualValues(t *testing.T) {
-    // This test kills the > → >= mutation because Max(3,3)
-    // returns 3 with >, but would return a (also 3) with >=.
-    // More importantly, it verifies the boundary behavior is intentional.
-    if got := Max(3, 3); got != 3 {
-        t.Errorf("Max(3,3) = %d, want 3", got)
+func TestIsAdult_Boundary(t *testing.T) {
+    if IsAdult(17) {
+        t.Fatal("17 is below the adult age threshold")
     }
 }
 ```
 
 Re-run mutest and that mutation point will now show `--- KILLED:`.
+An equivalent mutation cannot be killed by adding tests: for example, changing
+`>` to `>=` in an integer `Max(a, b)` that returns either operand produces the
+same result when `a == b`. Review such sites and use `//mutest:skip` when appropriate.
 
 ### Exit Codes
 
@@ -201,7 +198,7 @@ Positional arguments are package patterns (default: `./...`), following the same
 | `-diff` | | Only mutate lines changed relative to this git ref (e.g., `origin/main`) |
 | `-dry-run` | `false` | Discover mutations without running tests |
 | `-run` | | Regexp to pass to `go test -run` |
-| `-workers` | `NumCPU` | Max parallel test processes |
+| `-workers` | `NumCPU` | Max concurrent package builds / test processes; mutants in one package run sequentially |
 | `-timeout` | `30s` | Per-mutant test timeout |
 | `-threshold` | `0` | Minimum kill rate % (0-100); exit 1 if below. 0 = any survived fails |
 | `-skip-err-propagation` | `true` | Skip simple error propagation patterns (`if err != nil { return err }`) |
@@ -367,8 +364,10 @@ $ mutest -dry-run -json ./...
 3. **Instrument** — Replace each ordered comparison with a generic helper call (e.g., `a > b` → `_mutest_cmp_1(a, b)`) and each equality comparison with a flip of its result (`a == b` → `(a == b) != _mutest_on(1)`; the original comparison stays in place because its operands may legally have different static types, e.g. `any == error`), then generate a runtime file that switches behavior based on `MUTEST_ID`
 4. **Build** — Compile one test binary per package with all mutations embedded
 5. **Verify baseline** — Run each test binary once with **no** mutation active. If any package's tests fail without a mutation, mutest aborts (a broken or flaky suite would otherwise make every mutant a false KILLED)
-6. **Test** — Run the pre-built binary once per mutation with `MUTEST_ID=N`, in a parallel worker pool. Each binary runs with its package directory as the working directory, so `testdata` relative paths resolve
+6. **Test** — Run the pre-built binary once per mutation with `MUTEST_ID=N`, in a worker pool that runs packages in parallel and mutants within a package sequentially to avoid shared fixture conflicts. Each binary runs with its package directory as the working directory, so `testdata` relative paths resolve
 7. **Judge** — `exit 0` = survived (test gap), `exit != 0` = killed (caught), timeout = detected (hung)
+
+Thresholds use the unrounded kill rate. Captured build/test output retains at most the last 64 KiB per process, with a truncation marker when needed. Timeouts cancel the test process tree on Unix and Windows.
 
 A package with **no test files** builds no binary; its mutants are reported as `SURVIVED` (no tests is the largest possible test gap). If the run is interrupted (e.g. `Ctrl+C`), untested mutants are reported as `CANCELED` and mutest exits non-zero rather than judging success on partial results.
 
@@ -380,13 +379,12 @@ mutest automatically skips mutations that are known to produce false positives:
 
 | Pattern | Example | Why skipped |
 |---------|---------|-------------|
-| `len(x)` compared to `0` | `len(s) > 0` → `len(s) >= 0` | `len()` never returns negative, so the mutation cannot change behavior |
-| `cap(x)` compared to `0` | `cap(s) > 0` → `cap(s) >= 0` | Same as `len()` — `cap()` is always non-negative |
+| Local integer clamp | `if x < 1 { x = 1 }` | At equality, assigning the same constant leaves the local integer unchanged; no `else` branch |
 | Simple error propagation | `if err != nil { return err }` | Go's idiomatic error propagation — mutating these generates noise without meaningful test gaps |
 
-Comparisons with non-zero literals (e.g., `len(s) > 1`) are **not** skipped — the boundary between 1 and 2 is meaningful.
+Comparisons involving `len` or `cap`, including comparisons to zero, are tested: changing `len(s) > 0` to `len(s) >= 0` changes behavior for an empty slice. Clamp skipping excludes floats, map entries, globals, and expressions with side effects.
 
-Complex error handling is **not** skipped — compound conditions (`err != nil && !timedOut`), fallback assignments, and multi-statement bodies represent real logic that should be tested.
+Only direct propagation of an error-typed value (or a `fmt.Errorf` wrapper) under `err != nil` is skipped. Success branches (`err == nil`) are tested. Complex error handling is **not** skipped — compound conditions (`err != nil && !timedOut`), fallback assignments, and multi-statement bodies represent real logic that should be tested.
 
 To disable error propagation skipping and mutate all `err != nil` checks:
 

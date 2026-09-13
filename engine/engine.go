@@ -2,18 +2,23 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"go/version"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/fchimpan/mutest/internal/process"
 	"github.com/fchimpan/mutest/mutator"
 )
 
@@ -24,9 +29,13 @@ type Overlay struct {
 
 // goPackage represents a subset of `go list -json` output.
 type goPackage struct {
-	Dir        string    `json:"Dir"`
-	ImportPath string    `json:"ImportPath"`
-	GoFiles    []string  `json:"GoFiles"`
+	Dir        string   `json:"Dir"`
+	ImportPath string   `json:"ImportPath"`
+	GoFiles    []string `json:"GoFiles"`
+	CgoFiles   []string
+	ImportMap  map[string]string
+	Imports    []string
+	Export     string
 	Module     *goModule `json:"Module"`
 }
 
@@ -38,7 +47,7 @@ type goModule struct {
 }
 
 // minTargetGoVersion is the lowest `go` directive mutest supports in target
-// modules: the generated cmp.Ordered helpers require generics (Go 1.18+),
+// modules: the generated ordered-comparison helpers require generics (Go 1.18+),
 // and 1.20 is mutest's published floor.
 const minTargetGoVersion = "go1.20"
 
@@ -67,6 +76,7 @@ type Engine struct {
 	patterns    []string          // package patterns (e.g. "./...", "./pkg/calc")
 	sourceCache map[string][]byte // file path → source bytes
 	importPaths map[string]string // file path → import path
+	packages    []goPackage
 }
 
 // New creates an Engine for the given package patterns with the given mutators.
@@ -83,58 +93,155 @@ func New(patterns []string, mutators ...mutator.Mutator) *Engine {
 // DiscoverAll resolves the package patterns via `go list`, parses all
 // non-test .go files, and returns all mutation points found.
 func (e *Engine) DiscoverAll() ([]mutator.MutationPoint, error) {
-	files, err := e.resolveFiles()
+	return e.DiscoverAllContext(context.Background())
+}
+
+func (e *Engine) DiscoverAllContext(ctx context.Context) ([]mutator.MutationPoint, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := e.resolveFilesContext(ctx); err != nil {
+		return nil, err
+	}
+	// Parse before loading exports: malformed files must never disappear silently.
+	fset := token.NewFileSet()
+	parsed := make(map[string][]*ast.File)
+	paths := make(map[*ast.File]string)
+	for _, pkg := range e.packages {
+		for _, name := range append(append([]string{}, pkg.GoFiles...), pkg.CgoFiles...) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			path := filepath.Join(pkg.Dir, name)
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read %s: %w", path, err)
+			}
+			file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
+			if err != nil {
+				return nil, fmt.Errorf("parse %s: %w", path, err)
+			}
+			parsed[pkg.ImportPath] = append(parsed[pkg.ImportPath], file)
+			paths[file] = path
+			e.sourceCache[path] = src
+		}
+	}
+	imp, err := e.typeImporter(ctx, fset)
 	if err != nil {
 		return nil, err
 	}
-
+	archOut, err := process.Command(ctx, "go", "env", "GOARCH").Output()
+	if err != nil {
+		return nil, fmt.Errorf("go env GOARCH: %w", err)
+	}
+	sizes := types.SizesFor("gc", strings.TrimSpace(string(archOut)))
+	if sizes == nil {
+		return nil, fmt.Errorf("unsupported target architecture %q", strings.TrimSpace(string(archOut)))
+	}
 	var points []mutator.MutationPoint
-	for _, path := range files {
-		src, err := os.ReadFile(path)
-		if err != nil {
-			continue // skip unreadable files
+	for _, pkg := range e.packages {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-
-		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
-		if err != nil {
-			continue // skip unparseable files
+		info := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue), Uses: make(map[*ast.Ident]types.Object), Defs: make(map[*ast.Ident]types.Object)}
+		cfg := types.Config{Importer: mappedImporter{imp, pkg.ImportMap}, FakeImportC: true, Sizes: sizes, Error: func(error) {}}
+		_, typeErr := cfg.Check(pkg.ImportPath, fset, parsed[pkg.ImportPath], info)
+		// FakeImportC cannot fully type-check C declarations. Keep unknown sites
+		// rather than using incomplete type information to exclude them.
+		if typeErr != nil && len(pkg.CgoFiles) == 0 {
+			return nil, fmt.Errorf("type check %s: %w", pkg.ImportPath, typeErr)
 		}
-
-		e.sourceCache[path] = src
-		pkg := file.Name.Name
-		importPath := e.importPaths[path]
-		si := buildSkipInfo(fset, file, src)
-
-		for _, m := range e.mutators {
-			pts := m.Discover(fset, file, path, pkg)
-			for i := range pts {
-				pts[i].ImportPath = importPath
-				pts[i].MutatorName = m.Name()
-				if !si.shouldSkip(pts[i].Line) {
-					points = append(points, pts[i])
+		for _, file := range parsed[pkg.ImportPath] {
+			path := paths[file]
+			si := buildSkipInfo(fset, file, e.sourceCache[path])
+			for _, m := range e.mutators {
+				var pts []mutator.MutationPoint
+				if typed, ok := m.(interface {
+					DiscoverTyped(*token.FileSet, *ast.File, string, string, *types.Info) []mutator.MutationPoint
+				}); ok {
+					pts = typed.DiscoverTyped(fset, file, path, file.Name.Name, info)
+				} else {
+					pts = m.Discover(fset, file, path, file.Name.Name)
+				}
+				for i := range pts {
+					pts[i].ImportPath = pkg.ImportPath
+					pts[i].MutatorName = m.Name()
+					if !si.shouldSkip(pts[i].Line) {
+						points = append(points, pts[i])
+					}
 				}
 			}
 		}
 	}
-
-	return points, nil
+	return points, ctx.Err()
 }
 
-// resolveFiles uses `go list -json` to resolve package patterns to
-// absolute file paths of non-test .go files.
-func (e *Engine) resolveFiles() ([]string, error) {
-	args := append([]string{"list", "-json"}, e.patterns...)
-	cmd := exec.Command("go", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return nil, fmt.Errorf("go list: %s", bytes.TrimSpace(exitErr.Stderr))
+// Load dependency export data using the active Go toolchain. This supports
+// module replacements and build tags without adding a package-loading dependency.
+func (e *Engine) typeImporter(ctx context.Context, fset *token.FileSet) (types.Importer, error) {
+	hasImports := false
+	for _, pkg := range e.packages {
+		for _, path := range pkg.Imports {
+			if path != "C" && path != "unsafe" {
+				hasImports = true
+			}
 		}
-		return nil, err
 	}
+	exports := make(map[string]string)
+	if hasImports {
+		// Resolve from the original patterns. Synthesized import paths from
+		// GOPATH relative imports cannot be passed back as package arguments.
+		args := append([]string{"list", "-deps", "-export", "-json"}, e.patterns...)
+		out, err := process.Command(ctx, "go", args...).Output()
+		if err != nil {
+			return nil, goListError(err)
+		}
+		dec := json.NewDecoder(bytes.NewReader(out))
+		for dec.More() {
+			var p goPackage
+			if err := dec.Decode(&p); err != nil {
+				return nil, err
+			}
+			exports[p.ImportPath] = p.Export
+		}
+	}
+	return importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		if exports[path] == "" {
+			return nil, fmt.Errorf("no export data for %s", path)
+		}
+		return os.Open(exports[path])
+	}), nil
+}
 
+// GOPATH vendoring can map a source import to a different canonical path.
+type mappedImporter struct {
+	base  types.Importer
+	paths map[string]string
+}
+
+func (m mappedImporter) Import(path string) (*types.Package, error) {
+	if mapped := m.paths[path]; mapped != "" {
+		path = mapped
+	}
+	return m.base.Import(path)
+}
+
+func goListError(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return fmt.Errorf("go list: %s", bytes.TrimSpace(exitErr.Stderr))
+	}
+	return err
+}
+
+func (e *Engine) resolveFiles() ([]string, error) { return e.resolveFilesContext(context.Background()) }
+func (e *Engine) resolveFilesContext(ctx context.Context) ([]string, error) {
+	args := append([]string{"list", "-json"}, e.patterns...)
+	out, err := process.Command(ctx, "go", args...).Output()
+	if err != nil {
+		return nil, goListError(err)
+	}
+	e.packages = nil
 	var files []string
 	dec := json.NewDecoder(bytes.NewReader(out))
 	for dec.More() {
@@ -145,13 +252,14 @@ func (e *Engine) resolveFiles() ([]string, error) {
 		if err := checkGoVersion(pkg.Module); err != nil {
 			return nil, err
 		}
-		for _, f := range pkg.GoFiles {
-			absPath := filepath.Join(pkg.Dir, f)
-			files = append(files, absPath)
-			e.importPaths[absPath] = pkg.ImportPath
+		e.packages = append(e.packages, pkg)
+		for _, f := range append(append([]string{}, pkg.GoFiles...), pkg.CgoFiles...) {
+			path := filepath.Join(pkg.Dir, f)
+			files = append(files, path)
+			e.importPaths[path] = pkg.ImportPath
 		}
 	}
-	return files, nil
+	return files, ctx.Err()
 }
 
 // --- //mutest:skip directive support ---
@@ -189,8 +297,8 @@ func buildSkipInfo(fset *token.FileSet, file *ast.File, src []byte) *skipInfo {
 		}
 		for _, c := range fn.Doc.List {
 			if strings.Contains(c.Text, "mutest:skip") {
-				start := fset.Position(fn.Pos()).Line
-				end := fset.Position(fn.End()).Line
+				start := fset.PositionFor(fn.Pos(), false).Line
+				end := fset.PositionFor(fn.End(), false).Line
 				si.ranges = append(si.ranges, lineRange{start, end})
 				break
 			}
@@ -206,7 +314,7 @@ func buildSkipInfo(fset *token.FileSet, file *ast.File, src []byte) *skipInfo {
 			if !strings.Contains(c.Text, "mutest:skip") {
 				continue
 			}
-			line := fset.Position(c.Pos()).Line
+			line := fset.PositionFor(c.Pos(), false).Line
 			si.lines[line] = true
 
 			target := line
@@ -243,7 +351,7 @@ func isStandaloneComment(fset *token.FileSet, pos token.Pos, src []byte) bool {
 	if tf == nil {
 		return false
 	}
-	lineStart := tf.Offset(tf.LineStart(tf.Line(pos)))
+	lineStart := tf.Offset(tf.LineStart(tf.PositionFor(pos, false).Line))
 	commentStart := tf.Offset(pos)
 	return len(bytes.TrimSpace(src[lineStart:commentStart])) == 0
 }
@@ -272,8 +380,8 @@ func buildConstRanges(fset *token.FileSet, file *ast.File) []lineRange {
 		if !ok || decl.Tok != token.CONST {
 			return true
 		}
-		start := fset.Position(decl.Pos()).Line
-		end := fset.Position(decl.End()).Line
+		start := fset.PositionFor(decl.Pos(), false).Line
+		end := fset.PositionFor(decl.End(), false).Line
 		ranges = append(ranges, lineRange{start, end})
 		return true
 	})
@@ -305,8 +413,8 @@ func buildBlockRanges(fset *token.FileSet, file *ast.File) map[int]lineRange {
 		default:
 			return true
 		}
-		line := fset.Position(start).Line
-		ranges[line] = lineRange{line, fset.Position(end).Line}
+		line := fset.PositionFor(start, false).Line
+		ranges[line] = lineRange{line, fset.PositionFor(end, false).Line}
 		return true
 	})
 	return ranges
